@@ -1,5 +1,13 @@
-# Mary — Garden of Marigolds
+# A Bouquet for Mary 💐
 
-An interactive web page where procedurally drawn marigolds (with a few cosmos and asters) bloom and swirl around the name **Mary** glowing at the center of the screen. Move your mouse to stir the flowers and trail sparkles, and click (or tap) anywhere to plant a new bloom.
+A romantic, interactive digital bouquet. Marigolds, roses, cosmos, and asters bud at the bottom of the screen, bloom open, and spiral upward in a 3D helix around a glowing golden name — passing behind and in front of it — over a lush flower bed, drifting petals, floating hearts, and fireflies.
+
+Move your mouse to stir the flowers and trail sparkles; click or tap to plant a new bloom.
+
+**Send it as digital flowers** — the name and message are customizable through the URL, so one link works for anyone:
+
+```
+index.html?name=Sofia&msg=happy%20anniversary
+```
 
 No dependencies or build step — just open `index.html` in a browser.
