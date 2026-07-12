@@ -716,43 +716,72 @@
     };
   }
 
+  // growth sweeps up and out from bottom-center, so the whole garden
+  // blooms as one choreographed wave instead of scattered pops
+  function sweepDelay(x, y) {
+    const maxD = Math.hypot(Math.max(CX, W - CX), H);
+    return 5.2 * (Math.hypot(x - CX, y - H) / maxD) + rand(0, 1.1);
+  }
+
   function seedWreath() {
     vines.length = 0;
     const { rx, ry } = wreathEllipse();
 
-    // ring of blooms around the name — kept clear of the letters
+    // species cycle: every neighbourhood gets a balanced mix of colours
+    const CYCLE = ["marigold", "rose", "marigold", "cosmos", "marigold", "rose", "aster", "marigold", "cosmos", "rose"];
+    let ci = Math.floor(rand(0, CYCLE.length));
+    const nextType = () => CYCLE[ci++ % CYCLE.length];
+
+    const placed = [];
+
+    // ring of blooms around the name — a calm, even ellipse
     const ringN = clamp(Math.round(W / 105), 10, 16);
     for (let i = 0; i < ringN; i++) {
-      const a = (i / ringN) * TAU + rand(-0.14, 0.14);
-      const f = rand(1.08, 1.28);
-      const type = Math.random() < 0.55 ? "marigold" : pickSpecies();
-      const size = rand(24, 38);
+      const a = (i / ringN) * TAU + rand(-0.08, 0.08);
+      const f = rand(1.10, 1.18);
+      const type = i % 2 === 0 ? "marigold" : nextType();
+      const size = rand(25, 33);
       const p = clearAnchor(CX + Math.cos(a) * rx * f, CY + Math.sin(a) * ry * f, size);
+      placed.push(p);
       vines.push(makeVine({
         ax: p.x, ay: p.y,
         ringAng: a,
         type,
         size,
+        delay: sweepDelay(p.x, p.y),
         front: Math.sin(a) > -0.15, // top-arc blooms peek from behind the name
       }));
     }
 
-    // jittered grid of blooms across the whole screen, so flowers open
-    // everywhere — corners, top, sides — with no bare patches
-    const cell = clamp(Math.sqrt((W * H) / 34), 130, 195);
-    const cols = Math.ceil(W / cell), rows = Math.ceil(H * 0.92 / cell);
-    for (let cyi = 0; cyi < rows; cyi++) {
-      for (let cxi = 0; cxi < cols; cxi++) {
-        if (Math.random() < 0.18) continue; // organic gaps
-        let ax = (cxi + 0.5) * (W / cols) + rand(-cell * 0.3, cell * 0.3);
-        let ay = H * 0.03 + (cyi + 0.5) * (H * 0.92 / rows) + rand(-cell * 0.3, cell * 0.3);
-        const size = rand(19, 33);
-        // skip cells buried in the wreath ring or the text itself
-        const nx = (ax - CX) / (rx * 1.35), ny = (ay - CY) / (ry * 1.5);
+    // best-candidate (blue-noise) scatter: each new bloom lands as far as
+    // possible from the ones already placed — even coverage, no clumps
+    const scatterN = clamp(Math.round((W * H) / 42000), 16, 34);
+    for (let i = 0; i < scatterN; i++) {
+      let best = null, bestD = -1;
+      for (let k = 0; k < 14; k++) {
+        const cx = rand(W * 0.04, W * 0.96);
+        const cy = rand(H * 0.05, H * 0.92);
+        // keep candidates off the text and out of the wreath band
+        const nx = (cx - CX) / (rx * 1.32), ny = (cy - CY) / (ry * 1.45);
         if (nx * nx + ny * ny < 1) continue;
-        const p = clearAnchor(ax, ay, size);
-        vines.push(makeVine({ ax: p.x, ay: p.y, size, front: Math.random() < 0.5 }));
+        let nearest = Infinity;
+        for (const q of placed) {
+          const d = Math.hypot(cx - q.x, cy - q.y);
+          if (d < nearest) nearest = d;
+        }
+        if (nearest > bestD) { bestD = nearest; best = { x: cx, y: cy }; }
       }
+      if (!best) continue;
+      const size = Math.random() < 0.2 ? rand(30, 37) : rand(21, 31);
+      const p = clearAnchor(best.x, best.y, size);
+      placed.push(p);
+      vines.push(makeVine({
+        ax: p.x, ay: p.y,
+        size,
+        type: nextType(),
+        delay: sweepDelay(p.x, p.y),
+        front: Math.random() < 0.5,
+      }));
     }
 
     if (reducedMotion) {
