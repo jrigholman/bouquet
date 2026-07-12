@@ -21,37 +21,18 @@
     cursor: crosshair;
   }
 
-  #hint {
-    position: fixed;
-    bottom: 0.9rem;
-    left: 50%;
-    transform: translateX(-50%);
-    font-family: Georgia, serif;
-    font-style: italic;
-    font-size: 0.9rem;
-    color: rgba(255, 226, 210, 0.55);
-    z-index: 2;
-    pointer-events: none;
-    animation: fadehint 2s ease 7s forwards;
-    text-align: center;
-    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
-  }
-
-  @keyframes fadehint { to { opacity: 0; } }
 </style>
 </head>
 <body>
 <canvas id="garden"></canvas>
-<div id="hint">move your mouse through the flowers &middot; click to plant a bloom</div>
 
 <script>
 (function () {
   "use strict";
 
-  // ----- personalization: ?name=Sofia&msg=happy%20birthday -----
+  // ----- personalization: ?name=Sofia -----
   const params = new URLSearchParams(location.search);
   const NAME = (params.get("name") || "Mary").slice(0, 24);
-  const MSG = (params.get("msg") || "a bouquet, just for you").slice(0, 60);
   document.title = "A Bouquet for " + NAME;
 
   const canvas = document.getElementById("garden");
@@ -84,7 +65,6 @@
   // ---------------------------------------------------------------
   function renderName() {
     const fontSize = clamp(W * 0.125, 52, 165);
-    const subSize = Math.max(14, fontSize * 0.135);
     const font = `italic bold ${fontSize}px Georgia, "Palatino Linotype", serif`;
     ctx.font = font;
     const textW = ctx.measureText(NAME).width;
@@ -93,7 +73,7 @@
     const pad = fontSize * 0.6;
     const c = document.createElement("canvas");
     const lw = textW + pad * 2;
-    const lh = fontSize * 1.35 + subSize * 2.4 + pad * 2;
+    const lh = fontSize * 1.35 + pad * 2;
     c.width = Math.ceil(lw * DPR);
     c.height = Math.ceil(lh * DPR);
     const g = c.getContext("2d");
@@ -121,13 +101,6 @@
     grad.addColorStop(1, "#e08a3c");
     g.fillStyle = grad;
     g.fillText(NAME, nx, ny);
-
-    // message beneath
-    g.font = `italic ${subSize}px Georgia, serif`;
-    g.shadowColor = "rgba(0,0,0,0.6)";
-    g.shadowBlur = 4;
-    g.fillStyle = "rgba(255,224,205,0.92)";
-    g.fillText(MSG + "  ♥", nx, ny + fontSize * 0.72 + subSize);
 
     nameSprite = { canvas: c, w: lw, h: lh, ox: nx, oy: ny };
   }
