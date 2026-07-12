@@ -20,7 +20,6 @@
     display: block;
     cursor: crosshair;
   }
-
 </style>
 </head>
 <body>
@@ -42,26 +41,29 @@
   const GOLDEN = 2.399963; // golden angle, for floret spirals
 
   let W = 0, H = 0, CX = 0, CY = 0, DPR = 1;
-  let clearRadius = 120;    // half-width of the name, for the swirl funnel
+  let clearRadius = 120;
   let vignette = null;
   let nameSprite = null;
+  let animT = 0;
 
   const mouse = { x: -9999, y: -9999, active: false };
-  const risers = [];       // flowers ascending in the helix
-  const bed = [];          // the lush bed along the bottom
+  const vines = [];
+  const bed = [];
+  const tumblers = [];
   const sparkles = [];
   const driftPetals = [];
   const hearts = [];
-  const motes = [];        // firefly glow motes
+  const motes = [];
   const bokehs = [];
 
   const rand = (a, b) => a + Math.random() * (b - a);
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const smooth = (v) => v * v * (3 - 2 * v);
   const hsl = (h, s, l, a = 1) => `hsla(${h.toFixed(1)},${s.toFixed(1)}%,${l.toFixed(1)}%,${a})`;
 
   // ---------------------------------------------------------------
-  // The name, pre-rendered with its glow so flowers can swirl both
-  // behind and in front of it
+  // The name, pre-rendered with its glow so vines and blooms can sit
+  // both behind and in front of it
   // ---------------------------------------------------------------
   function renderName() {
     const fontSize = clamp(W * 0.125, 52, 165);
@@ -83,7 +85,6 @@
 
     const nx = lw / 2, ny = pad + fontSize * 0.62;
 
-    // halo passes
     g.font = font;
     g.shadowColor = "rgba(255,170,90,0.85)";
     g.shadowBlur = fontSize * 0.28;
@@ -93,7 +94,6 @@
     g.fillText(NAME, nx, ny);
     g.shadowBlur = 0;
 
-    // gradient gold face
     const grad = g.createLinearGradient(0, ny - fontSize * 0.55, 0, ny + fontSize * 0.55);
     grad.addColorStop(0, "#fffbe9");
     grad.addColorStop(0.35, "#ffe9b0");
@@ -114,7 +114,7 @@
     ctx.translate(CX, CY);
     ctx.scale(scale, scale);
     ctx.drawImage(s.canvas, -s.ox, -s.oy, s.w, s.h);
-    if (pulse > 0) { // soft breathing of the glow
+    if (pulse > 0) {
       ctx.globalAlpha = pulse * 0.28;
       ctx.globalCompositeOperation = "lighter";
       ctx.drawImage(s.canvas, -s.ox, -s.oy, s.w, s.h);
@@ -132,7 +132,7 @@
     canvas.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     CX = W / 2;
-    CY = H * 0.46;
+    CY = H * 0.44;
 
     vignette = ctx.createRadialGradient(CX, CY, Math.min(W, H) * 0.44, CX, CY, Math.hypot(CX, CY) * 1.08);
     vignette.addColorStop(0, "rgba(0,0,0,0)");
@@ -141,16 +141,18 @@
     renderName();
     seedBokeh();
     seedBed();
+    seedWreath();
+    seedTumblers();
   }
 
   // ---------------------------------------------------------------
   // Flower species
   // ---------------------------------------------------------------
   const SPECIES = {
-    marigold: { weight: 0.34, size: [26, 44] },
-    rose:     { weight: 0.30, size: [26, 42] },
-    cosmos:   { weight: 0.20, size: [22, 34] },
-    aster:    { weight: 0.16, size: [17, 27] },
+    marigold: { weight: 0.42, size: [26, 44], bud: [32, 95, 55] },
+    rose:     { weight: 0.26, size: [26, 42], bud: [348, 70, 55] },
+    cosmos:   { weight: 0.18, size: [22, 34], bud: [332, 70, 70] },
+    aster:    { weight: 0.14, size: [17, 27], bud: [264, 55, 65] },
   };
 
   function pickSpecies() {
@@ -255,19 +257,17 @@
       const a = (i / count) * TAU + angleOffset + rand(-0.05, 0.05);
       const L = R * rand(0.92, 1.08);
       const w = width * rand(0.88, 1.1);
-      // each petal catches light a little differently
       const jh = rand(-2.5, 2.5), jl = rand(-4, 4);
       g.save();
       g.rotate(a);
       path(g, L, w);
-      // cupped shading: dark base, bright belly, slightly dimmer tip
       const grad = g.createLinearGradient(0, 0, L, 0);
       grad.addColorStop(0, hsl(base[0] + jh, base[1], base[2] + jl * 0.6));
       grad.addColorStop(0.55, hsl(mid[0] + jh, mid[1], mid[2] + jl));
       grad.addColorStop(1, hsl(tip[0] + jh, tip[1], tip[2] + jl));
       g.fillStyle = grad;
       g.fill();
-      if (rim) { // petal edge catching the light
+      if (rim) {
         g.strokeStyle = rim;
         g.lineWidth = 0.9;
         g.stroke();
@@ -312,7 +312,6 @@
     }
   }
 
-  // tight spiral of curved petals — the heart of a rose
   function roseCore(sp, R, h) {
     const g = sp.g;
     g.save();
@@ -335,7 +334,6 @@
     g.restore();
   }
 
-  // soft dark pool under the flower's eye, so the middle reads as recessed
   function centerAO(sp, R) {
     const g = sp.g;
     const grad = g.createRadialGradient(0, 0, 0, 0, 0, R * 1.25);
@@ -374,7 +372,6 @@
       centerAO(center, size * 0.17);
       floretDisk(center, size * 0.14, hsl(h - 12, 80, 22), hsl(h - 4, 85, 40));
     } else if (type === "rose") {
-      // some blush pink, some deep red
       const h = (Math.random() < 0.55 ? 344 : 355) + hueJit;
       const deep = h > 350;
       const nLayers = 5;
@@ -460,15 +457,92 @@
   }
 
   // ---------------------------------------------------------------
-  // Stem, leaves, calyx — drawn as light vectors every frame so the
-  // flowers stand on real stems instead of floating in space
+  // Flower model. Heads are RIGID: the layer-lift direction is fixed
+  // per flower at creation, so petal rings never slide against each
+  // other — all motion is whole-flower nod and sway.
   // ---------------------------------------------------------------
-  function bezPoint(p0, p1, p2, p3, u) {
-    const v = 1 - u;
+  let flowerId = 0;
+
+  function baseFlower(type, size) {
+    const spec = SPECIES[type];
+    const stemHue = rand(98, 118);
+    const leaves = [];
+    for (const side of [1, -1]) {
+      if (Math.random() < 0.85) {
+        leaves.push({
+          u: side > 0 ? rand(0.35, 0.52) : rand(0.6, 0.8),
+          ang: side > 0 ? -rand(0.25, 0.65) : Math.PI + rand(0.25, 0.65),
+          len: rand(0.5, 0.8),
+          side,
+          col: hsl(stemHue + rand(-6, 6), rand(40, 52), rand(26, 36)),
+        });
+      }
+    }
     return {
-      x: v * v * v * p0.x + 3 * v * v * u * p1.x + 3 * v * u * u * p2.x + u * u * u * p3.x,
-      y: v * v * v * p0.y + 3 * v * v * u * p1.y + 3 * v * u * u * p2.y + u * u * u * p3.y,
+      type, size,
+      id: flowerId++,
+      sprites: buildSprites(type, size, rand(-7, 7)),
+      spin: rand(0, TAU),
+      swayPhase: rand(0, TAU),
+      breathPhase: rand(0, TAU),
+      squash: rand(0.86, 0.95),
+      tiltA: rand(-0.12, 0.12),
+      liftX: rand(-0.15, 0.45),   // fixed light/tilt direction — never drifts
+      liftY: rand(0.35, 0.75),
+      stemLen: size * 1.4,
+      stemBend: rand(-0.30, 0.30) * size,
+      stemCol: hsl(stemHue, 46, 27),
+      stemHi: hsl(stemHue - 5, 42, 40, 0.75),
+      budCol: hsl(spec.bud[0], spec.bud[1], spec.bud[2]),
+      leaves,
+      hasShadow: false,
+      bloomDur: rand(2.4, 3.6),
+      age: 0,
+      bloomAmount() {
+        const p = clamp(this.age / this.bloomDur, 0, 1);
+        return 1 - Math.pow(1 - p, 3);
+      },
     };
+  }
+
+  // the head only: petal layers + floret center, opaque, rigid
+  function drawHeadCore(g, fl, t) {
+    const bloom = fl.bloomAmount();
+    if (bloom <= 0) return;
+    const { layers, center } = fl.sprites;
+    const breath = reducedMotion ? 1 : 1 + Math.sin(t * 1.1 + fl.breathPhase) * 0.012;
+
+    const n = layers.length;
+    for (let li = 0; li < n; li++) {
+      const delay = li / (n + 1);
+      const lb = clamp((bloom - delay) / (1 - delay), 0, 1);
+      if (lb <= 0) continue;
+      const eased = 1 - Math.pow(1 - lb, 2);
+      const s = (0.15 + 0.85 * eased) * breath;
+      const lift = li * fl.size * 0.055;
+      const sq = fl.squash * (0.92 + 0.10 * (n === 1 ? 1 : li / (n - 1)));
+
+      const sp = layers[li];
+      g.save();
+      g.translate(-fl.liftX * lift, -fl.liftY * lift);
+      g.scale(1, sq);
+      g.rotate(fl.spin + (1 - eased) * 0.9);
+      g.scale(s, s);
+      g.drawImage(sp.canvas, -sp.logical / 2, -sp.logical / 2, sp.logical, sp.logical);
+      g.restore();
+    }
+
+    const cb = Math.min(1, bloom * 1.5);
+    if (cb > 0.05) {
+      const lift = n * fl.size * 0.055;
+      g.save();
+      g.translate(-fl.liftX * lift, -fl.liftY * lift);
+      g.scale(1, fl.squash * 1.04);
+      g.rotate(fl.spin * 0.3);
+      g.scale(cb * breath, cb * breath);
+      g.drawImage(center.canvas, -center.logical / 2, -center.logical / 2, center.logical, center.logical);
+      g.restore();
+    }
   }
 
   function drawLeaf(g, lf, x, y, len, sway) {
@@ -490,290 +564,366 @@
     g.restore();
   }
 
-  function drawStem(g, fl, t, bloom) {
-    const s = fl.size;
-    const len = fl.stemLen * (0.4 + 0.6 * Math.min(1, bloom * 1.3));
-    const sway = reducedMotion ? 0 : Math.sin(t * 0.8 + fl.swayPhase) * s * 0.16;
-    const bend = fl.stemBend + sway;
-    const p0 = { x: 0, y: s * 0.30 };
-    const p1 = { x: bend * 0.4, y: len * 0.35 };
-    const p2 = { x: bend * 0.9, y: len * 0.72 };
-    const p3 = { x: bend * 1.3, y: len };
-    const lw = Math.max(1.6, s * 0.075);
-
-    g.lineCap = "round";
-    g.strokeStyle = fl.stemCol;
-    g.lineWidth = lw;
-    g.beginPath();
-    g.moveTo(p0.x, p0.y);
-    g.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
-    g.stroke();
-    // thin lit edge makes the stem read as a cylinder
-    g.strokeStyle = fl.stemHi;
-    g.lineWidth = lw * 0.4;
-    g.beginPath();
-    g.moveTo(p0.x - lw * 0.22, p0.y);
-    g.bezierCurveTo(p1.x - lw * 0.22, p1.y, p2.x - lw * 0.22, p2.y, p3.x - lw * 0.22, p3.y);
-    g.stroke();
-
-    const leafSway = reducedMotion ? 0 : Math.sin(t * 1.1 + fl.swayPhase) * 0.09;
-    for (const lf of fl.leaves) {
-      if (lf.u * fl.stemLen > len) continue; // still furled while the stem grows
-      const p = bezPoint(p0, p1, p2, p3, lf.u);
-      drawLeaf(g, lf, p.x, p.y, s * lf.len, leafSway * lf.side);
-    }
-
-    // calyx: sepals hugging the base of the head
-    for (const a of fl.sepals) {
+  function drawCalyx(g, fl, scale) {
+    const s = fl.size * scale;
+    for (const a of [[-0.16, 0.55, 0.10], [0, 0, 0.12], [0.16, -0.55, 0.10]]) {
       g.save();
-      g.translate(a.x * s, s * 0.42);
-      g.rotate(a.ang);
+      g.translate(a[0] * s, s * 0.42);
+      g.rotate(a[1]);
       g.fillStyle = fl.stemCol;
       g.beginPath();
       g.moveTo(-s * 0.08, 0);
-      g.quadraticCurveTo(a.curl * s, s * 0.30, 0, s * 0.52);
+      g.quadraticCurveTo(a[2] * s, s * 0.30, 0, s * 0.52);
       g.quadraticCurveTo(-s * 0.14, s * 0.28, -s * 0.08, 0);
       g.fill();
       g.restore();
     }
   }
 
-  // ---------------------------------------------------------------
-  // Flower drawing: stem + tilted, bowl-shaped head with per-layer
-  // parallax. Always drawn OPAQUE here; drawFlower() composites the
-  // whole flower through a scratch canvas when it must be translucent,
-  // so petals and neighbours never show through each other (no x-ray).
-  // ---------------------------------------------------------------
-  function drawFlowerInto(g, fl, t, scale) {
-    const bloom = fl.bloomAmount();
-    if (bloom <= 0) return;
-    const { layers, center, shadow } = fl.sprites;
-
-    const sway = reducedMotion ? 0 : Math.sin(t * 0.85 + fl.swayPhase) * 0.04;
-    const nod = reducedMotion ? 0 : Math.sin(t * 0.7 + fl.breathPhase) * 0.04;
-    const breath = reducedMotion ? 1 : 1 + Math.sin(t * 1.2 + fl.breathPhase) * 0.015;
-    // tilt direction drifts slowly; inner (higher) layers shift with it
-    const tiltX = reducedMotion ? 0.35 : Math.sin(t * 0.5 + fl.swayPhase) * 0.5 + 0.15;
-    const tiltY = reducedMotion ? 0.5 : Math.cos(t * 0.42 + fl.breathPhase) * 0.35 + 0.55;
-
-    g.save();
-    g.scale(scale, scale);
-
-    if (fl.hasShadow) { // grounded flowers cast a pool of shade
-      g.globalAlpha = 0.5 * bloom;
-      const shDim = shadow.logical * 1.05;
-      g.drawImage(shadow.canvas, -shDim / 2 + fl.size * 0.10, -shDim / 2 + fl.size * 0.22, shDim, shDim);
-      g.globalAlpha = 1;
+  // short stem for the flower bed (rooted straight into the soil)
+  function drawBedStem(g, fl, t, bloom) {
+    const s = fl.size;
+    const len = fl.stemLen * (0.4 + 0.6 * Math.min(1, bloom * 1.3));
+    const sway = reducedMotion ? 0 : Math.sin(t * 0.8 + fl.swayPhase) * s * 0.10;
+    const bend = fl.stemBend + sway;
+    const lw = Math.max(1.6, s * 0.075);
+    g.lineCap = "round";
+    g.strokeStyle = fl.stemCol;
+    g.lineWidth = lw;
+    g.beginPath();
+    g.moveTo(0, s * 0.30);
+    g.bezierCurveTo(bend * 0.4, len * 0.4, bend * 0.9, len * 0.75, bend * 1.2, len);
+    g.stroke();
+    const leafSway = reducedMotion ? 0 : Math.sin(t * 1.1 + fl.swayPhase) * 0.08;
+    for (const lf of fl.leaves) {
+      drawLeaf(g, lf, bend * lf.u * 0.7, len * lf.u, s * lf.len, leafSway * lf.side);
     }
-
-    g.rotate(fl.tiltA + nod); // the whole flower nods on its stem
-
-    drawStem(g, fl, t, bloom);
-
-    const n = layers.length;
-    for (let li = 0; li < n; li++) {
-      const delay = li / (n + 1);
-      const lb = clamp((bloom - delay) / (1 - delay), 0, 1);
-      if (lb <= 0) continue;
-      const eased = 1 - Math.pow(1 - lb, 2);
-      const s = (0.15 + 0.85 * eased) * breath;
-      const lift = li * fl.size * 0.065; // how far this layer rises off the disc
-      // outer layers squash more than inner: the head is a bowl, not a disc
-      const sq = fl.squash * (0.92 + 0.10 * (n === 1 ? 1 : li / (n - 1)));
-
-      const sp = layers[li];
-      g.save();
-      g.translate(-tiltX * lift, -tiltY * lift);
-      g.scale(1, sq);
-      g.rotate(fl.spin + sway + (1 - eased) * 0.9);
-      g.scale(s, s);
-      g.drawImage(sp.canvas, -sp.logical / 2, -sp.logical / 2, sp.logical, sp.logical);
-      g.restore();
-    }
-
-    const cb = Math.min(1, bloom * 1.5);
-    if (cb > 0.05) {
-      const lift = n * fl.size * 0.065;
-      g.save();
-      g.translate(-tiltX * lift, -tiltY * lift);
-      g.scale(1, fl.squash * 1.04);
-      g.rotate(fl.spin * 0.3);
-      g.scale(cb * breath, cb * breath);
-      g.drawImage(center.canvas, -center.logical / 2, -center.logical / 2, center.logical, center.logical);
-      g.restore();
-    }
-
-    g.restore();
+    drawCalyx(g, fl, 1);
   }
 
-  const scratch = document.createElement("canvas");
-  const scratchG = scratch.getContext("2d");
-
-  function drawFlower(fl, t, x, y, scale, alpha) {
-    if (alpha <= 0.01) return;
-    if (alpha > 0.985) {
-      ctx.save();
-      ctx.translate(x, y);
-      drawFlowerInto(ctx, fl, t, scale);
-      ctx.restore();
-      return;
-    }
-    // translucent: render the whole flower opaque offscreen, blit once
-    const s = fl.size * scale;
-    const hw = Math.ceil(s * 1.8);
-    const top = Math.ceil(s * 1.7);
-    const w = hw * 2;
-    const h = Math.ceil(top + fl.stemLen * scale + s);
-    if (scratch.width < w * DPR) scratch.width = Math.ceil(w * DPR);
-    if (scratch.height < h * DPR) scratch.height = Math.ceil(h * DPR);
-    scratchG.setTransform(1, 0, 0, 1, 0, 0);
-    scratchG.clearRect(0, 0, scratch.width, scratch.height);
-    scratchG.setTransform(DPR, 0, 0, DPR, 0, 0);
-    scratchG.translate(hw, top);
-    drawFlowerInto(scratchG, fl, t, scale);
+  function drawBedFlower(fl, t) {
+    const bloom = fl.bloomAmount();
+    if (bloom <= 0) return;
+    const nod = reducedMotion ? 0 : Math.sin(t * 0.7 + fl.breathPhase) * 0.035;
     ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(scratch, 0, 0, w * DPR, h * DPR, x - hw, y - top, w, h);
+    ctx.translate(fl.x, fl.y);
+    ctx.scale(fl.dim, fl.dim);
+    ctx.globalAlpha = 0.5 * bloom;
+    const shadow = fl.sprites.shadow;
+    const shDim = shadow.logical * 1.05;
+    ctx.drawImage(shadow.canvas, -shDim / 2 + fl.size * 0.1, -shDim / 2 + fl.size * 0.22, shDim, shDim);
+    ctx.globalAlpha = 1;
+    ctx.rotate(fl.tiltA + nod);
+    drawBedStem(ctx, fl, t, bloom);
+    drawHeadCore(ctx, fl, t);
     ctx.restore();
   }
 
-  let flowerId = 0;
-
-  function baseFlower(type, size) {
-    const stemHue = rand(98, 118);
-    const leaves = [];
-    for (const side of [1, -1]) {
-      if (Math.random() < 0.85) {
-        leaves.push({
-          u: side > 0 ? rand(0.35, 0.52) : rand(0.6, 0.8),
-          ang: side > 0 ? -rand(0.25, 0.65) : Math.PI + rand(0.25, 0.65),
-          len: rand(0.5, 0.8),
-          side,
-          col: hsl(stemHue + rand(-6, 6), rand(40, 52), rand(26, 36)),
+  // ---------------------------------------------------------------
+  // Vines: each grows from below the bed along a swirling path around
+  // the name, then follows the marigold life cycle at its anchor —
+  // green bud swells, colour peeks from the crown, petals unfurl ring
+  // by ring, and the bloom rests in place.
+  // ---------------------------------------------------------------
+  function catmullRom(way) {
+    const pts = [];
+    for (let i = 0; i < way.length - 1; i++) {
+      const p0 = way[Math.max(0, i - 1)], p1 = way[i];
+      const p2 = way[i + 1], p3 = way[Math.min(way.length - 1, i + 2)];
+      const steps = 14;
+      for (let j = 0; j < steps; j++) {
+        const u = j / steps, u2 = u * u, u3 = u2 * u;
+        pts.push({
+          x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * u + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * u2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * u3),
+          y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * u + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * u2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * u3),
         });
       }
     }
-    const sepals = [
-      { x: -0.16, ang: 0.55, curl: 0.10 },
-      { x: 0, ang: 0, curl: 0.12 },
-      { x: 0.16, ang: -0.55, curl: 0.10 },
-    ];
+    pts.push({ x: way[way.length - 1].x, y: way[way.length - 1].y });
+    let L = 0;
+    pts[0].d = 0;
+    for (let i = 1; i < pts.length; i++) {
+      L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+      pts[i].d = L;
+    }
+    return { pts, L };
+  }
+
+  function pointAtD(pts, d, cursor) {
+    let i = cursor.i || 0;
+    while (i < pts.length - 1 && pts[i + 1].d < d) i++;
+    while (i > 0 && pts[i].d > d) i--;
+    cursor.i = i;
+    const a = pts[i], b = pts[Math.min(i + 1, pts.length - 1)];
+    const span = b.d - a.d || 1;
+    const u = clamp((d - a.d) / span, 0, 1);
+    return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
+  }
+
+  function wreathEllipse() {
+    const rx = Math.min(clearRadius * 1.14, W * 0.5 - 60);
+    const ry = clearRadius * 0.55 + 40;
+    return { rx, ry };
+  }
+
+  function makeVine(opts) {
+    const type = opts.type || pickSpecies();
+    const spec = SPECIES[type];
+    const size = opts.size || rand(spec.size[0], spec.size[1]);
+    const fl = baseFlower(type, size);
+    const { rx, ry } = wreathEllipse();
+
+    const anchor = { x: opts.ax, y: opts.ay };
+    const way = [];
+    const x0 = clamp(anchor.x + rand(-W * 0.22, W * 0.22), 40, W - 40);
+    way.push({ x: x0, y: H + 50 });
+
+    if (opts.ringAng !== undefined) {
+      // swirl along the wreath ellipse to the anchor
+      const entry = rand(0.5, Math.PI - 0.5); // bottom half of the ellipse
+      let dir = Math.random() < 0.5 ? 1 : -1;
+      let wrap = ((opts.ringAng - entry) * dir) % TAU;
+      if (wrap < 0) wrap += TAU;
+      if (wrap > TAU * 0.72) { dir = -dir; wrap = TAU - wrap; }
+      const ex = CX + Math.cos(entry) * rx * 1.5;
+      const ey = CY + Math.sin(entry) * ry * 1.6;
+      way.push({ x: (x0 + ex) / 2 + rand(-70, 70), y: (H + ey) / 2 + rand(-30, 30) });
+      const step = 0.55;
+      for (let k = step; k < wrap; k += step) {
+        const a = entry + dir * k;
+        const f = 1.5 - 0.5 * (k / wrap);
+        way.push({
+          x: clamp(CX + Math.cos(a) * rx * f, 30, W - 30),
+          y: CY + Math.sin(a) * ry * (f + 0.15),
+        });
+      }
+    } else {
+      // scatter anchor: S-curve with a small approach hook
+      const m1 = { x: x0 + rand(-120, 120), y: H * 0.78 };
+      const m2 = { x: (x0 + anchor.x) / 2 + rand(-90, 90), y: (H * 0.78 + anchor.y) / 2 + rand(-20, 60) };
+      for (const m of [m1, m2]) {
+        // keep waypoints out of the text zone, bending toward the anchor's
+        // side so the path curves rather than zig-zagging across
+        if (Math.abs(m.y - CY) < ry * 1.25 && Math.abs(m.x - CX) < rx * 1.3) {
+          m.x = clamp(CX + Math.sign(anchor.x - CX || 1) * rx * rand(1.32, 1.5), 30, W - 30);
+        }
+        way.push(m);
+      }
+      way.push({ x: anchor.x + rand(-50, 50), y: anchor.y + rand(70, 130) });
+    }
+    way.push(anchor);
+
+    const { pts, L } = catmullRom(way);
+
+    // leaf stations along the vine
+    const leaves = [];
+    let d = rand(70, 130), side = Math.random() < 0.5 ? 1 : -1;
+    const cursor = {};
+    while (d < L - 70) {
+      const p = pointAtD(pts, d, cursor);
+      const p2 = pointAtD(pts, Math.min(L, d + 6), cursor);
+      const tang = Math.atan2(p2.y - p.y, p2.x - p.x);
+      leaves.push({
+        d,
+        x: p.x, y: p.y,
+        ang: tang + side * rand(0.55, 0.95),
+        len: size * rand(0.45, 0.7),
+        col: hsl(rand(98, 118), rand(40, 52), rand(26, 36)),
+      });
+      side = -side;
+      d += rand(85, 150);
+    }
+
+    // head orientation from the arrival tangent, eased toward upright
+    const pe = pts[pts.length - 1], pp = pts[Math.max(0, pts.length - 8)];
+    let headAng = Math.atan2(pe.y - pp.y, pe.x - pp.x) + Math.PI / 2;
+    while (headAng > Math.PI) headAng -= TAU;
+    while (headAng < -Math.PI) headAng += TAU;
+    headAng *= 0.45;
+
     return {
-      type, size,
-      id: flowerId++,
-      sprites: buildSprites(type, size, rand(-7, 7)),
-      spin: rand(0, TAU),
-      spinSpeed: rand(-0.05, 0.05),
+      fl, pts, L, leaves, headAng,
+      progress: 0,
+      cursor: {},
+      delay: opts.delay !== undefined ? opts.delay : rand(0.2, 6.5),
+      speed: (opts.speed || rand(120, 200)) * (reducedMotion ? 0 : 1),
+      arrived: false,
+      arriveT: 0,
+      front: opts.front,
+      lean: 0,
       swayPhase: rand(0, TAU),
-      breathPhase: rand(0, TAU),
-      squash: rand(0.86, 0.95),
-      tiltA: rand(-0.12, 0.12),
-      stemLen: size * 2.6,      // callers override
-      stemBend: rand(-0.30, 0.30) * size,
-      stemCol: hsl(stemHue, 46, 27),
-      stemHi: hsl(stemHue - 5, 42, 40, 0.75),
-      leaves,
-      sepals,
-      hasShadow: false,
-      bloomDur: rand(2.4, 4.2),
-      age: 0,
-      bloomAmount() {
-        const p = clamp(this.age / this.bloomDur, 0, 1);
-        return 1 - Math.pow(1 - p, 3);
-      },
+      lw: Math.max(2, size * 0.075),
     };
   }
 
-  // ---------------------------------------------------------------
-  // Risers: bud at the bottom, spiral up around the name.
-  // x = CX + cos(theta)·Rx(y), depth z = sin(theta) — a true helix,
-  // so flowers pass behind and in front of the name.
-  // ---------------------------------------------------------------
-  function funnelRadius(y, fl) {
-    const dyn = clamp(Math.abs(y - CY) / (H * 0.52), 0, 1);
-    const inner = clearRadius * 1.10 + fl.size * 0.7;
-    const outer = W * 0.48 * fl.spread;
-    return inner + Math.max(0, outer - inner) * Math.pow(dyn, 0.9);
-  }
+  function seedWreath() {
+    vines.length = 0;
+    const { rx, ry } = wreathEllipse();
 
-  function makeRiser(opts = {}) {
-    const type = opts.type || pickSpecies();
-    const spec = SPECIES[type];
-    const fl = baseFlower(type, rand(spec.size[0], spec.size[1]));
-    fl.spread = rand(0.5, 1.0);
-    fl.stemLen = fl.size * rand(2.2, 3.2);
-    fl.theta = rand(0, TAU);
-    fl.omega = rand(0.28, 0.6) * (reducedMotion ? 0.3 : 1);
-    fl.vy = rand(20, 42) * (reducedMotion ? 0.3 : 1);
-    fl.y = H + rand(20, 140);
-    fl.ox = 0; fl.oy = 0;
-    fl.z = Math.sin(fl.theta);
-    fl.yDraw = fl.y;
-
-    if (opts.x !== undefined) {
-      fl.y = opts.y;
-      const c = clamp((opts.x - CX) / funnelRadius(opts.y, fl), -1, 1);
-      fl.theta = Math.acos(c) * (Math.random() < 0.5 ? 1 : -1);
-    } else if (opts.staggered) {
-      fl.y = rand(-20, H + 60);
-      if (fl.y < H * 0.92) fl.age = fl.bloomDur; // already open mid-flight
+    // ring of blooms hugging the name — the wreath
+    const ringN = clamp(Math.round(W / 105), 10, 16);
+    for (let i = 0; i < ringN; i++) {
+      const a = (i / ringN) * TAU + rand(-0.14, 0.14);
+      const f = rand(0.98, 1.14);
+      const type = Math.random() < 0.55 ? "marigold" : pickSpecies();
+      vines.push(makeVine({
+        ax: clamp(CX + Math.cos(a) * rx * f, 40, W - 40),
+        ay: CY + Math.sin(a) * ry * f,
+        ringAng: a,
+        type,
+        size: rand(28, 44),
+        front: Math.sin(a) > -0.15, // top-arc blooms peek from behind the name
+      }));
     }
-    return fl;
-  }
 
-  function updateRiser(fl, dt, t) {
-    fl.age += dt;
-    fl.theta += fl.omega * dt;
-    fl.y -= fl.vy * dt;
-    fl.spin += fl.spinSpeed * dt * (reducedMotion ? 0.3 : 1);
+    // scattered blooms filling the mid-field
+    const scatterN = clamp(Math.round((W * H) / 90000), 8, 14);
+    for (let i = 0; i < scatterN; i++) {
+      let ax = rand(W * 0.06, W * 0.94);
+      let ay = rand(H * 0.10, H * 0.72);
+      const nx = (ax - CX) / (rx * 1.35), ny = (ay - CY) / (ry * 1.45);
+      if (nx * nx + ny * ny < 1) { // push out of the text zone
+        const m = 1.05 / Math.sqrt(nx * nx + ny * ny);
+        ax = clamp(CX + (ax - CX) * m, W * 0.05, W * 0.95);
+        ay = clamp(CY + (ay - CY) * m, H * 0.08, H * 0.8);
+      }
+      vines.push(makeVine({ ax, ay, size: rand(20, 34), front: Math.random() < 0.5 }));
+    }
 
-    if (fl.y < -fl.size * 2) Object.assign(fl, makeRiser({ type: fl.type }));
-
-    const rx = funnelRadius(fl.y, fl);
-    fl.z = Math.sin(fl.theta);
-    fl.x = CX + Math.cos(fl.theta) * rx;
-    // the swirl ring is tilted toward the viewer: flowers ride lower when
-    // in front, higher when behind — like looking down onto the orbit
-    fl.yDraw = fl.y + fl.z * clamp(clearRadius * 0.20, 26, 64);
-    // springy push from the cursor
-    if (mouse.active && !reducedMotion) {
-      const dx = fl.x - mouse.x, dy = fl.yDraw - mouse.y;
-      const d = Math.hypot(dx, dy);
-      if (d < 150 && d > 0.001) {
-        const force = (1 - d / 150) * 85 * dt;
-        fl.ox += (dx / d) * force;
-        fl.oy += (dy / d) * force;
+    if (reducedMotion) {
+      for (const v of vines) {
+        v.progress = v.L;
+        v.arrived = true;
+        v.arriveT = -20;
+        v.fl.age = 20;
       }
     }
-    fl.ox *= Math.pow(0.12, dt);
-    fl.oy *= Math.pow(0.12, dt);
   }
 
-  function riserAlphaScale(fl) {
-    const depth = (fl.z + 1) / 2;                       // 0 back … 1 front
-    const persp = 0.78 + 0.5 * clamp(fl.y / H, 0, 1);   // lower = closer
-    const scale = (0.60 + 0.58 * depth) * persp;
-    let alpha = 1; // opaque by default — depth comes from scale and the halo
-    const fadeBand = H * 0.14;
-    if (fl.yDraw < fadeBand) alpha *= clamp(fl.yDraw / fadeBand, 0, 1);
-    // go ghostly while crossing in front of the name so it stays readable
-    if (fl.z > 0) {
-      const inX = clamp(1 - Math.abs(fl.x - CX) / clearRadius, 0, 1);
-      const inY = clamp(1 - Math.abs(fl.yDraw - CY) / (clearRadius * 0.6), 0, 1);
-      alpha *= 1 - 0.62 * Math.sin(inX * Math.PI / 2) * Math.sin(inY * Math.PI / 2);
+  function updateVine(v, dt) {
+    if (animT < v.delay) return;
+    if (!v.arrived) {
+      v.progress += v.speed * dt;
+      if (v.progress >= v.L) {
+        v.progress = v.L;
+        v.arrived = true;
+        v.arriveT = animT;
+      }
+    } else {
+      // marigold life cycle: bud swells (0–1.4s), colour peeks (1–1.8s),
+      // petals unfurl (from 1.8s), then the bloom rests
+      v.fl.age = Math.max(0, (animT - v.arriveT) - 1.8);
     }
-    return { scale, alpha };
+    // heads lean away from the cursor
+    const tip = v.pts[v.pts.length - 1];
+    let target = 0;
+    if (mouse.active && v.arrived && !reducedMotion) {
+      const dx = tip.x - mouse.x, dy = tip.y - mouse.y;
+      const dd = Math.hypot(dx, dy);
+      if (dd < 150) target = (1 - dd / 150) * 0.3 * (dx >= 0 ? 1 : -1);
+    }
+    v.lean += (target - v.lean) * Math.min(1, dt * 5);
+  }
+
+  function drawBud(g, fl, swell, peek, fold) {
+    const a = 1 - clamp(fold * 2.2 - 0.15, 0, 1);
+    if (a <= 0 || swell <= 0) return;
+    const s = fl.size * (0.30 + 0.42 * smooth(swell));
+    g.save();
+    g.globalAlpha = a;
+    // colour of the coming petals peeking from the crown
+    if (peek > 0) {
+      g.fillStyle = fl.budCol;
+      g.beginPath();
+      g.ellipse(0, -s * 0.55, s * 0.34 * peek, s * 0.42 * peek, 0, 0, TAU);
+      g.fill();
+    }
+    // sepal shell folding open as the petals push out
+    for (let i = 0; i < 4; i++) {
+      const spread = (i - 1.5) * (0.34 + fold * 0.9);
+      g.save();
+      g.translate(0, s * 0.35);
+      g.rotate(spread);
+      g.fillStyle = i % 2 === 0 ? fl.stemCol : hsl(108, 44, 33);
+      g.beginPath();
+      g.moveTo(0, 0);
+      g.quadraticCurveTo(-s * 0.30, -s * 0.55, 0, -s * (1.05 - fold * 0.25));
+      g.quadraticCurveTo(s * 0.30, -s * 0.55, 0, 0);
+      g.fill();
+      g.restore();
+    }
+    g.restore();
+  }
+
+  function drawVine(v, t) {
+    if (animT < v.delay) return;
+    const { pts, fl } = v;
+    const endD = v.progress;
+
+    // stem: the traversed part of the path, two-tone for a lit edge
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    let i = 1;
+    ctx.strokeStyle = fl.stemCol;
+    ctx.lineWidth = v.lw;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (; i < pts.length && pts[i].d <= endD; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    const tip = pointAtD(pts, endD, v.cursor);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+    ctx.strokeStyle = fl.stemHi;
+    ctx.lineWidth = v.lw * 0.35;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x - v.lw * 0.2, pts[0].y);
+    for (let j = 1; j < i; j++) ctx.lineTo(pts[j].x - v.lw * 0.2, pts[j].y);
+    ctx.lineTo(tip.x - v.lw * 0.2, tip.y);
+    ctx.stroke();
+
+    // leaves unfold as the tip passes them
+    const leafSway = reducedMotion ? 0 : Math.sin(t * 1.0 + v.swayPhase) * 0.06;
+    for (const lf of v.leaves) {
+      if (lf.d > endD) break;
+      const grow = smooth(clamp((endD - lf.d) / 60, 0, 1));
+      if (grow <= 0.02) continue;
+      drawLeaf(ctx, { ang: lf.ang, col: lf.col }, lf.x, lf.y, lf.len * grow, leafSway);
+    }
+
+    if (!v.arrived) {
+      // growing tip: a pale young curl
+      ctx.fillStyle = hsl(95, 50, 46);
+      ctx.beginPath();
+      ctx.arc(tip.x, tip.y, v.lw * 0.9, 0, TAU);
+      ctx.fill();
+      return;
+    }
+
+    // the flower at the anchor, following the marigold life cycle
+    const ts = animT - v.arriveT;
+    const swell = clamp(ts / 1.4, 0, 1);
+    const peek = clamp((ts - 1.0) / 0.8, 0, 1);
+    const bloom = fl.bloomAmount();
+    const nod = reducedMotion ? 0 : Math.sin(t * 0.6 + v.swayPhase) * 0.03;
+    const bobX = reducedMotion ? 0 : Math.sin(t * 0.7 + v.swayPhase) * 2;
+
+    ctx.save();
+    ctx.translate(tip.x + bobX + v.lean * -9, tip.y);
+    ctx.rotate(v.headAng + fl.tiltA + nod + v.lean);
+    drawCalyx(ctx, fl, 0.4 + 0.6 * swell);
+    drawHeadCore(ctx, fl, t);
+    drawBud(ctx, fl, swell, peek, bloom);
+    ctx.restore();
   }
 
   // ---------------------------------------------------------------
-  // The flower bed: a dense, lush row anchoring the bottom edge
+  // The flower bed along the bottom, and a few drifting blossoms
   // ---------------------------------------------------------------
   function seedBed() {
     bed.length = 0;
     const rows = [
-      { y0: 0.885, y1: 0.915, sMul: [0.9, 1.2], gap: 72, dim: 0.6 },  // far row
-      { y0: 0.925, y1: 0.965, sMul: [1.15, 1.5], gap: 62, dim: 0.8 }, // middle row
-      { y0: 0.975, y1: 1.02, sMul: [1.45, 1.9], gap: 55, dim: 1 },    // front row
+      { y0: 0.885, y1: 0.915, sMul: [0.9, 1.2], gap: 72, dim: 0.6 },
+      { y0: 0.925, y1: 0.965, sMul: [1.15, 1.5], gap: 62, dim: 0.8 },
+      { y0: 0.975, y1: 1.02, sMul: [1.45, 1.9], gap: 55, dim: 1 },
     ];
     for (const row of rows) {
       const n = Math.ceil(W / row.gap) + 1;
@@ -783,15 +933,52 @@
         const fl = baseFlower(type, rand(spec.size[0], spec.size[1]) * rand(row.sMul[0], row.sMul[1]));
         fl.x = (i / n) * W + rand(-25, 25);
         fl.y = H * rand(row.y0, row.y1);
-        fl.squash = rand(0.72, 0.82); // seen more from the side
+        fl.squash = rand(0.72, 0.82);
         fl.dim = row.dim;
-        fl.stemLen = fl.size * rand(1.1, 1.6); // short stems into the soil
-        fl.hasShadow = true;
+        fl.stemLen = fl.size * rand(1.1, 1.6);
         fl.bloomDur = rand(1.8, 3.4);
-        fl.age = rand(-0.8, 0.4); // bloom in a quick wave on load
-        fl.spinSpeed = rand(-0.02, 0.02);
+        fl.age = rand(-0.8, 0.4);
         bed.push(fl);
       }
+    }
+  }
+
+  function seedTumblers() {
+    tumblers.length = 0;
+    const n = 5;
+    for (let i = 0; i < n; i++) {
+      const type = Math.random() < 0.6 ? "cosmos" : "aster";
+      const spec = SPECIES[type];
+      const fl = baseFlower(type, rand(14, 22));
+      fl.age = 10;
+      tumblers.push({
+        fl,
+        x: rand(0, W), y: rand(H * 0.08, H * 0.7),
+        vx: rand(10, 26) * (Math.random() < 0.5 ? -1 : 1),
+        vy: rand(-5, 5),
+        rot: rand(0, TAU),
+        rotV: rand(0.15, 0.4) * (Math.random() < 0.5 ? -1 : 1),
+        bob: rand(0, TAU),
+      });
+    }
+  }
+
+  function drawTumblers(dt, t) {
+    for (const tb of tumblers) {
+      tb.x += tb.vx * dt * (reducedMotion ? 0.2 : 1);
+      tb.y += (tb.vy + Math.sin(t * 0.6 + tb.bob) * 8) * dt * (reducedMotion ? 0.2 : 1);
+      tb.rot += tb.rotV * dt * (reducedMotion ? 0.2 : 1);
+      const m = tb.fl.size * 2;
+      if (tb.x < -m) tb.x = W + m;
+      if (tb.x > W + m) tb.x = -m;
+      if (tb.y < -m) tb.y = H * 0.7;
+      if (tb.y > H * 0.85) tb.y = -m;
+      ctx.save();
+      ctx.translate(tb.x, tb.y);
+      ctx.rotate(tb.rot);
+      ctx.scale(0.9, 0.9);
+      drawHeadCore(ctx, tb.fl, t);
+      ctx.restore();
     }
   }
 
@@ -831,11 +1018,10 @@
   }
 
   function heartPath(g, s) {
-    // normalized classic heart, centered, height ≈ s
     const k = s / 95;
     g.beginPath();
     g.moveTo(0, (40 - 70) * k);
-    g.bezierCurveTo(0 * k, (37 - 70) * k, -5 * k, (25 - 70) * k, -25 * k, (25 - 70) * k);
+    g.bezierCurveTo(0, (37 - 70) * k, -5 * k, (25 - 70) * k, -25 * k, (25 - 70) * k);
     g.bezierCurveTo(-55 * k, (25 - 70) * k, -55 * k, (62.5 - 70) * k, -55 * k, (62.5 - 70) * k);
     g.bezierCurveTo(-55 * k, (80 - 70) * k, -35 * k, (102 - 70) * k, 0, (120 - 70) * k);
     g.bezierCurveTo(35 * k, (102 - 70) * k, 55 * k, (80 - 70) * k, 55 * k, (62.5 - 70) * k);
@@ -887,7 +1073,6 @@
       ctx.fillRect(b.x - b.r, b.y - b.r, b.r * 2, b.r * 2);
     }
 
-    // dark garden mound grounding the bed
     const mound = ctx.createLinearGradient(0, H * 0.78, 0, H);
     mound.addColorStop(0, "rgba(16,6,14,0)");
     mound.addColorStop(1, "rgba(12,4,10,0.9)");
@@ -895,8 +1080,6 @@
     ctx.fillRect(0, H * 0.78, W, H * 0.22);
   }
 
-  // warm halo behind the name — drawn over the far flowers, so depth
-  // reads as atmosphere: the farther a flower, the more it sinks into glow
   function drawHalo() {
     const glow = ctx.createRadialGradient(CX, CY, 0, CX, CY, clearRadius * 1.9);
     glow.addColorStop(0, "rgba(255,165,90,0.16)");
@@ -933,30 +1116,18 @@
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
     const t = now / 1000;
+    animT += dt;
 
     drawBackground(dt);
 
-    // update all risers, then split by depth around the name.
-    // quantized depth + id tie-break keeps the paint order stable when two
-    // flowers sit at nearly the same depth (no z-fighting flicker)
-    for (const fl of risers) updateRiser(fl, dt, t);
-    risers.sort((a, b) =>
-      (Math.round(a.z * 24) - Math.round(b.z * 24)) || (a.id - b.id));
+    for (const v of vines) updateVine(v, dt);
 
-    for (const fl of risers) {
-      if (fl.z >= 0) break;
-      const { scale, alpha } = riserAlphaScale(fl);
-      drawFlower(fl, t, fl.x + fl.ox, fl.yDraw + fl.oy, scale, alpha);
-    }
-
+    // behind the name: back vines first, then drifting blossoms sunk in haze
+    for (const v of vines) if (!v.front) drawVine(v, t);
+    drawTumblers(dt, t);
     drawHalo();
     drawName(t);
-
-    for (const fl of risers) {
-      if (fl.z < 0) continue;
-      const { scale, alpha } = riserAlphaScale(fl);
-      drawFlower(fl, t, fl.x + fl.ox, fl.yDraw + fl.oy, scale, alpha);
-    }
+    for (const v of vines) if (v.front) drawVine(v, t);
 
     // floating hearts
     if (!reducedMotion && Math.random() < dt * 0.9 && hearts.length < 14) spawnHeart();
@@ -1005,11 +1176,10 @@
       ctx.restore();
     }
 
-    // the bed is nearest the viewer — draw over everything else, opaque
+    // the bed is nearest the viewer
     for (const fl of bed) {
       fl.age += dt;
-      fl.spin += fl.spinSpeed * dt;
-      drawFlower(fl, t, fl.x, fl.y, fl.dim, 1);
+      drawBedFlower(fl, t);
     }
 
     drawMotes(t);
@@ -1045,37 +1215,39 @@
     if (!reducedMotion && Math.random() < 0.5) spawnSparkle(x, y);
   }
 
-  function plantFlower(x, y) {
-    risers.push(makeRiser({ x, y }));
+  function plantVine(x, y) {
+    if (vines.length > 60) return; // the garden is full
+    const { rx, ry } = wreathEllipse();
+    let ax = x, ay = y;
+    const nx = (ax - CX) / (rx * 1.05), ny = (ay - CY) / (ry * 1.1);
+    if (nx * nx + ny * ny < 1) { // grow to the wreath edge, not over the name
+      const m = 1.08 / Math.max(0.2, Math.sqrt(nx * nx + ny * ny));
+      ax = clamp(CX + (ax - CX) * m, 40, W - 40);
+      ay = CY + (ay - CY) * m;
+    }
+    ay = clamp(ay, H * 0.06, H * 0.85);
+    vines.push(makeVine({ ax, ay, delay: animT, speed: 300, front: true }));
     for (let i = 0; i < 8; i++) spawnSparkle(x, y);
-    const cap = riserTarget() + 30;
-    while (risers.length > cap) risers.shift();
   }
 
   window.addEventListener("mousemove", (e) => pointerMove(e.clientX, e.clientY));
   window.addEventListener("mouseleave", () => { mouse.active = false; });
-  window.addEventListener("click", (e) => plantFlower(e.clientX, e.clientY));
+  window.addEventListener("click", (e) => plantVine(e.clientX, e.clientY));
   window.addEventListener("touchmove", (e) => {
     const t0 = e.touches[0];
     if (t0) pointerMove(t0.clientX, t0.clientY);
   }, { passive: true });
   window.addEventListener("touchstart", (e) => {
     const t0 = e.touches[0];
-    if (t0) plantFlower(t0.clientX, t0.clientY);
+    if (t0) plantVine(t0.clientX, t0.clientY);
   }, { passive: true });
   window.addEventListener("resize", resize);
 
   // ---------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------
-  function riserTarget() {
-    return clamp(Math.round((W * H) / 14500), 38, 90);
-  }
-
   resize();
   seedMotes();
-  const n = riserTarget();
-  for (let i = 0; i < n; i++) risers.push(makeRiser({ staggered: true }));
   requestAnimationFrame(frame);
 })();
 </script>
