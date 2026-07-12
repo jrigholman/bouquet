@@ -460,26 +460,115 @@
   }
 
   // ---------------------------------------------------------------
-  // Shared flower drawing: tilted disc + per-layer parallax = 3D
+  // Stem, leaves, calyx — drawn as light vectors every frame so the
+  // flowers stand on real stems instead of floating in space
   // ---------------------------------------------------------------
-  function drawFlower(fl, t, x, y, scale, alpha) {
+  function bezPoint(p0, p1, p2, p3, u) {
+    const v = 1 - u;
+    return {
+      x: v * v * v * p0.x + 3 * v * v * u * p1.x + 3 * v * u * u * p2.x + u * u * u * p3.x,
+      y: v * v * v * p0.y + 3 * v * v * u * p1.y + 3 * v * u * u * p2.y + u * u * u * p3.y,
+    };
+  }
+
+  function drawLeaf(g, lf, x, y, len, sway) {
+    g.save();
+    g.translate(x, y);
+    g.rotate(lf.ang + sway);
+    g.fillStyle = lf.col;
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.quadraticCurveTo(len * 0.5, -len * 0.34, len, -len * 0.06);
+    g.quadraticCurveTo(len * 0.5, len * 0.24, 0, 0);
+    g.fill();
+    g.strokeStyle = "rgba(15,45,18,0.4)";
+    g.lineWidth = 0.8;
+    g.beginPath();
+    g.moveTo(len * 0.06, -len * 0.01);
+    g.quadraticCurveTo(len * 0.5, -len * 0.10, len * 0.92, -len * 0.05);
+    g.stroke();
+    g.restore();
+  }
+
+  function drawStem(g, fl, t, bloom) {
+    const s = fl.size;
+    const len = fl.stemLen * (0.4 + 0.6 * Math.min(1, bloom * 1.3));
+    const sway = reducedMotion ? 0 : Math.sin(t * 0.8 + fl.swayPhase) * s * 0.16;
+    const bend = fl.stemBend + sway;
+    const p0 = { x: 0, y: s * 0.30 };
+    const p1 = { x: bend * 0.4, y: len * 0.35 };
+    const p2 = { x: bend * 0.9, y: len * 0.72 };
+    const p3 = { x: bend * 1.3, y: len };
+    const lw = Math.max(1.6, s * 0.075);
+
+    g.lineCap = "round";
+    g.strokeStyle = fl.stemCol;
+    g.lineWidth = lw;
+    g.beginPath();
+    g.moveTo(p0.x, p0.y);
+    g.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+    g.stroke();
+    // thin lit edge makes the stem read as a cylinder
+    g.strokeStyle = fl.stemHi;
+    g.lineWidth = lw * 0.4;
+    g.beginPath();
+    g.moveTo(p0.x - lw * 0.22, p0.y);
+    g.bezierCurveTo(p1.x - lw * 0.22, p1.y, p2.x - lw * 0.22, p2.y, p3.x - lw * 0.22, p3.y);
+    g.stroke();
+
+    const leafSway = reducedMotion ? 0 : Math.sin(t * 1.1 + fl.swayPhase) * 0.09;
+    for (const lf of fl.leaves) {
+      if (lf.u * fl.stemLen > len) continue; // still furled while the stem grows
+      const p = bezPoint(p0, p1, p2, p3, lf.u);
+      drawLeaf(g, lf, p.x, p.y, s * lf.len, leafSway * lf.side);
+    }
+
+    // calyx: sepals hugging the base of the head
+    for (const a of fl.sepals) {
+      g.save();
+      g.translate(a.x * s, s * 0.42);
+      g.rotate(a.ang);
+      g.fillStyle = fl.stemCol;
+      g.beginPath();
+      g.moveTo(-s * 0.08, 0);
+      g.quadraticCurveTo(a.curl * s, s * 0.30, 0, s * 0.52);
+      g.quadraticCurveTo(-s * 0.14, s * 0.28, -s * 0.08, 0);
+      g.fill();
+      g.restore();
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Flower drawing: stem + tilted, bowl-shaped head with per-layer
+  // parallax. Always drawn OPAQUE here; drawFlower() composites the
+  // whole flower through a scratch canvas when it must be translucent,
+  // so petals and neighbours never show through each other (no x-ray).
+  // ---------------------------------------------------------------
+  function drawFlowerInto(g, fl, t, scale) {
     const bloom = fl.bloomAmount();
-    if (alpha <= 0 || bloom <= 0) return;
+    if (bloom <= 0) return;
     const { layers, center, shadow } = fl.sprites;
 
-    const sway = reducedMotion ? 0 : Math.sin(t * 0.85 + fl.swayPhase) * 0.06;
+    const sway = reducedMotion ? 0 : Math.sin(t * 0.85 + fl.swayPhase) * 0.04;
+    const nod = reducedMotion ? 0 : Math.sin(t * 0.7 + fl.breathPhase) * 0.04;
     const breath = reducedMotion ? 1 : 1 + Math.sin(t * 1.2 + fl.breathPhase) * 0.015;
     // tilt direction drifts slowly; inner (higher) layers shift with it
     const tiltX = reducedMotion ? 0.35 : Math.sin(t * 0.5 + fl.swayPhase) * 0.5 + 0.15;
     const tiltY = reducedMotion ? 0.5 : Math.cos(t * 0.42 + fl.breathPhase) * 0.35 + 0.55;
 
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(scale, scale * fl.squash); // viewed at an angle, not flat-on
+    g.save();
+    g.scale(scale, scale);
 
-    ctx.globalAlpha = alpha * 0.5 * bloom;
-    const shDim = shadow.logical * 1.05;
-    ctx.drawImage(shadow.canvas, -shDim / 2 + fl.size * 0.10, -shDim / 2 + fl.size * 0.22, shDim, shDim);
+    if (fl.hasShadow) { // grounded flowers cast a pool of shade
+      g.globalAlpha = 0.5 * bloom;
+      const shDim = shadow.logical * 1.05;
+      g.drawImage(shadow.canvas, -shDim / 2 + fl.size * 0.10, -shDim / 2 + fl.size * 0.22, shDim, shDim);
+      g.globalAlpha = 1;
+    }
+
+    g.rotate(fl.tiltA + nod); // the whole flower nods on its stem
+
+    drawStem(g, fl, t, bloom);
 
     const n = layers.length;
     for (let li = 0; li < n; li++) {
@@ -489,44 +578,103 @@
       const eased = 1 - Math.pow(1 - lb, 2);
       const s = (0.15 + 0.85 * eased) * breath;
       const lift = li * fl.size * 0.065; // how far this layer rises off the disc
+      // outer layers squash more than inner: the head is a bowl, not a disc
+      const sq = fl.squash * (0.92 + 0.10 * (n === 1 ? 1 : li / (n - 1)));
 
       const sp = layers[li];
-      ctx.save();
-      ctx.translate(-tiltX * lift, -tiltY * lift);
-      ctx.rotate(fl.spin + sway + (1 - eased) * 0.9);
-      ctx.scale(s, s);
-      ctx.globalAlpha = alpha * Math.min(1, lb * 1.6);
-      ctx.drawImage(sp.canvas, -sp.logical / 2, -sp.logical / 2, sp.logical, sp.logical);
-      ctx.restore();
+      g.save();
+      g.translate(-tiltX * lift, -tiltY * lift);
+      g.scale(1, sq);
+      g.rotate(fl.spin + sway + (1 - eased) * 0.9);
+      g.scale(s, s);
+      g.drawImage(sp.canvas, -sp.logical / 2, -sp.logical / 2, sp.logical, sp.logical);
+      g.restore();
     }
 
     const cb = Math.min(1, bloom * 1.5);
     if (cb > 0.05) {
       const lift = n * fl.size * 0.065;
-      ctx.save();
-      ctx.translate(-tiltX * lift, -tiltY * lift);
-      ctx.rotate(fl.spin * 0.3);
-      ctx.scale(cb * breath, cb * breath);
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(center.canvas, -center.logical / 2, -center.logical / 2, center.logical, center.logical);
-      ctx.restore();
+      g.save();
+      g.translate(-tiltX * lift, -tiltY * lift);
+      g.scale(1, fl.squash * 1.04);
+      g.rotate(fl.spin * 0.3);
+      g.scale(cb * breath, cb * breath);
+      g.drawImage(center.canvas, -center.logical / 2, -center.logical / 2, center.logical, center.logical);
+      g.restore();
     }
 
+    g.restore();
+  }
+
+  const scratch = document.createElement("canvas");
+  const scratchG = scratch.getContext("2d");
+
+  function drawFlower(fl, t, x, y, scale, alpha) {
+    if (alpha <= 0.01) return;
+    if (alpha > 0.985) {
+      ctx.save();
+      ctx.translate(x, y);
+      drawFlowerInto(ctx, fl, t, scale);
+      ctx.restore();
+      return;
+    }
+    // translucent: render the whole flower opaque offscreen, blit once
+    const s = fl.size * scale;
+    const hw = Math.ceil(s * 1.8);
+    const top = Math.ceil(s * 1.7);
+    const w = hw * 2;
+    const h = Math.ceil(top + fl.stemLen * scale + s);
+    if (scratch.width < w * DPR) scratch.width = Math.ceil(w * DPR);
+    if (scratch.height < h * DPR) scratch.height = Math.ceil(h * DPR);
+    scratchG.setTransform(1, 0, 0, 1, 0, 0);
+    scratchG.clearRect(0, 0, scratch.width, scratch.height);
+    scratchG.setTransform(DPR, 0, 0, DPR, 0, 0);
+    scratchG.translate(hw, top);
+    drawFlowerInto(scratchG, fl, t, scale);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(scratch, 0, 0, w * DPR, h * DPR, x - hw, y - top, w, h);
     ctx.restore();
   }
 
   let flowerId = 0;
 
   function baseFlower(type, size) {
+    const stemHue = rand(98, 118);
+    const leaves = [];
+    for (const side of [1, -1]) {
+      if (Math.random() < 0.85) {
+        leaves.push({
+          u: side > 0 ? rand(0.35, 0.52) : rand(0.6, 0.8),
+          ang: side > 0 ? -rand(0.25, 0.65) : Math.PI + rand(0.25, 0.65),
+          len: rand(0.5, 0.8),
+          side,
+          col: hsl(stemHue + rand(-6, 6), rand(40, 52), rand(26, 36)),
+        });
+      }
+    }
+    const sepals = [
+      { x: -0.16, ang: 0.55, curl: 0.10 },
+      { x: 0, ang: 0, curl: 0.12 },
+      { x: 0.16, ang: -0.55, curl: 0.10 },
+    ];
     return {
       type, size,
       id: flowerId++,
       sprites: buildSprites(type, size, rand(-7, 7)),
       spin: rand(0, TAU),
-      spinSpeed: rand(-0.15, 0.15),
+      spinSpeed: rand(-0.05, 0.05),
       swayPhase: rand(0, TAU),
       breathPhase: rand(0, TAU),
       squash: rand(0.86, 0.95),
+      tiltA: rand(-0.12, 0.12),
+      stemLen: size * 2.6,      // callers override
+      stemBend: rand(-0.30, 0.30) * size,
+      stemCol: hsl(stemHue, 46, 27),
+      stemHi: hsl(stemHue - 5, 42, 40, 0.75),
+      leaves,
+      sepals,
+      hasShadow: false,
       bloomDur: rand(2.4, 4.2),
       age: 0,
       bloomAmount() {
@@ -553,6 +701,7 @@
     const spec = SPECIES[type];
     const fl = baseFlower(type, rand(spec.size[0], spec.size[1]));
     fl.spread = rand(0.5, 1.0);
+    fl.stemLen = fl.size * rand(2.2, 3.2);
     fl.theta = rand(0, TAU);
     fl.omega = rand(0.28, 0.6) * (reducedMotion ? 0.3 : 1);
     fl.vy = rand(20, 42) * (reducedMotion ? 0.3 : 1);
@@ -604,7 +753,7 @@
     const depth = (fl.z + 1) / 2;                       // 0 back … 1 front
     const persp = 0.78 + 0.5 * clamp(fl.y / H, 0, 1);   // lower = closer
     const scale = (0.60 + 0.58 * depth) * persp;
-    let alpha = 0.62 + 0.38 * depth;                    // far = hazier
+    let alpha = 1; // opaque by default — depth comes from scale and the halo
     const fadeBand = H * 0.14;
     if (fl.yDraw < fadeBand) alpha *= clamp(fl.yDraw / fadeBand, 0, 1);
     // go ghostly while crossing in front of the name so it stays readable
@@ -636,9 +785,11 @@
         fl.y = H * rand(row.y0, row.y1);
         fl.squash = rand(0.72, 0.82); // seen more from the side
         fl.dim = row.dim;
+        fl.stemLen = fl.size * rand(1.1, 1.6); // short stems into the soil
+        fl.hasShadow = true;
         fl.bloomDur = rand(1.8, 3.4);
         fl.age = rand(-0.8, 0.4); // bloom in a quick wave on load
-        fl.spinSpeed = rand(-0.05, 0.05);
+        fl.spinSpeed = rand(-0.02, 0.02);
         bed.push(fl);
       }
     }
@@ -854,11 +1005,11 @@
       ctx.restore();
     }
 
-    // the bed is nearest the viewer — draw over everything else
+    // the bed is nearest the viewer — draw over everything else, opaque
     for (const fl of bed) {
       fl.age += dt;
       fl.spin += fl.spinSpeed * dt;
-      drawFlower(fl, t, fl.x, fl.y, fl.dim, fl.dim);
+      drawFlower(fl, t, fl.x, fl.y, fl.dim, 1);
     }
 
     drawMotes(t);
