@@ -246,28 +246,30 @@
 
   function petalRing(sp, opts) {
     const g = sp.g;
-    const { count, R, width, path, baseCol, midCol, tipCol, angleOffset, veins, rim } = opts;
+    const { count, R, width, path, base, mid, tip, angleOffset, veins, rim } = opts;
     g.save();
-    g.shadowColor = "rgba(35,5,15,0.5)";
-    g.shadowBlur = R * 0.13;
-    g.shadowOffsetY = R * 0.05 * SS;
+    g.shadowColor = "rgba(35,5,15,0.55)";
+    g.shadowBlur = R * 0.17;
+    g.shadowOffsetY = R * 0.06 * SS;
     for (let i = 0; i < count; i++) {
       const a = (i / count) * TAU + angleOffset + rand(-0.05, 0.05);
       const L = R * rand(0.92, 1.08);
       const w = width * rand(0.88, 1.1);
+      // each petal catches light a little differently
+      const jh = rand(-2.5, 2.5), jl = rand(-4, 4);
       g.save();
       g.rotate(a);
       path(g, L, w);
       // cupped shading: dark base, bright belly, slightly dimmer tip
       const grad = g.createLinearGradient(0, 0, L, 0);
-      grad.addColorStop(0, baseCol);
-      grad.addColorStop(0.55, midCol);
-      grad.addColorStop(1, tipCol);
+      grad.addColorStop(0, hsl(base[0] + jh, base[1], base[2] + jl * 0.6));
+      grad.addColorStop(0.55, hsl(mid[0] + jh, mid[1], mid[2] + jl));
+      grad.addColorStop(1, hsl(tip[0] + jh, tip[1], tip[2] + jl));
       g.fillStyle = grad;
       g.fill();
       if (rim) { // petal edge catching the light
         g.strokeStyle = rim;
-        g.lineWidth = 0.8;
+        g.lineWidth = 0.9;
         g.stroke();
       }
       g.strokeStyle = "rgba(60,10,25,0.10)";
@@ -333,6 +335,16 @@
     g.restore();
   }
 
+  // soft dark pool under the flower's eye, so the middle reads as recessed
+  function centerAO(sp, R) {
+    const g = sp.g;
+    const grad = g.createRadialGradient(0, 0, 0, 0, 0, R * 1.25);
+    grad.addColorStop(0, "rgba(30,5,15,0.42)");
+    grad.addColorStop(1, "rgba(30,5,15,0)");
+    g.fillStyle = grad;
+    g.fillRect(-R * 1.25, -R * 1.25, R * 2.5, R * 2.5);
+  }
+
   function buildSprites(type, size, hueJit) {
     const layers = [];
     let center = null;
@@ -349,16 +361,17 @@
           R,
           width: R * 0.34,
           path: marigoldPetalPath,
-          baseCol: hsl(h - 14 + f * 6, 88, 30 + f * 9),
-          midCol: hsl(h + f * 16, 96, 50 + f * 12),
-          tipCol: hsl(h + f * 12, 90, 44 + f * 11),
+          base: [h - 14 + f * 6, 88, 30 + f * 9],
+          mid: [h + f * 16, 96, 50 + f * 12],
+          tip: [h + f * 12, 90, 44 + f * 11],
           angleOffset: li * 0.42,
-          rim: hsl(h + 18, 95, 72, 0.25),
+          rim: hsl(h + 18, 95, 72, 0.3),
         });
         bakeShading(sp, R);
         layers.push(sp);
       }
-      center = makeSprite(size * 0.16);
+      center = makeSprite(size * 0.20);
+      centerAO(center, size * 0.17);
       floretDisk(center, size * 0.14, hsl(h - 12, 80, 22), hsl(h - 4, 85, 40));
     } else if (type === "rose") {
       // some blush pink, some deep red
@@ -374,16 +387,17 @@
           R,
           width: R * 0.42,
           path: rosePetalPath,
-          baseCol: hsl(h - 6, deep ? 68 : 58, (deep ? 26 : 40) + f * 7),
-          midCol: hsl(h, deep ? 74 : 66, (deep ? 44 : 62) + f * 9),
-          tipCol: hsl(h + 5, deep ? 70 : 62, (deep ? 38 : 56) + f * 9),
+          base: [h - 6, deep ? 68 : 58, (deep ? 26 : 40) + f * 7],
+          mid: [h, deep ? 74 : 66, (deep ? 44 : 62) + f * 9],
+          tip: [h + 5, deep ? 70 : 62, (deep ? 38 : 56) + f * 9],
           angleOffset: li * 0.5 + 0.2,
-          rim: hsl(h + 8, 80, deep ? 62 : 80, 0.3),
+          rim: hsl(h + 8, 80, deep ? 62 : 80, 0.35),
         });
         bakeShading(sp, R);
         layers.push(sp);
       }
-      center = makeSprite(size * 0.30);
+      center = makeSprite(size * 0.34);
+      centerAO(center, size * 0.28);
       roseCore(center, size * 0.26, h);
     } else if (type === "cosmos") {
       const h = 330 + hueJit * 1.5;
@@ -395,17 +409,18 @@
           R,
           width: R * 0.30,
           path: cosmosPetalPath,
-          baseCol: hsl(h, 62, 54 + dl),
-          midCol: hsl(h + 4, 74, 78 + dl * 0.6),
-          tipCol: hsl(h + 4, 68, 72 + dl * 0.6),
+          base: [h, 62, 54 + dl],
+          mid: [h + 4, 74, 78 + dl * 0.6],
+          tip: [h + 4, 68, 72 + dl * 0.6],
           angleOffset: scale < 1 ? TAU / 16 : 0,
           veins: true,
-          rim: hsl(h + 10, 80, 88, 0.3),
+          rim: hsl(h + 10, 80, 88, 0.35),
         });
         bakeShading(sp, R);
         layers.push(sp);
       }
-      center = makeSprite(size * 0.24);
+      center = makeSprite(size * 0.28);
+      centerAO(center, size * 0.23);
       floretDisk(center, size * 0.20, hsl(38, 95, 42), hsl(48, 100, 62));
     } else { // aster
       const h = 262 + hueJit * 1.8;
@@ -417,16 +432,17 @@
           R,
           width: R * 0.10,
           path: asterPetalPath,
-          baseCol: hsl(h - 6, 48, 48 + dl),
-          midCol: hsl(h + 6, 62, 72 + dl * 0.6),
-          tipCol: hsl(h + 6, 56, 66 + dl * 0.6),
+          base: [h - 6, 48, 48 + dl],
+          mid: [h + 6, 62, 72 + dl * 0.6],
+          tip: [h + 6, 56, 66 + dl * 0.6],
           angleOffset: scale < 1 ? TAU / 36 : 0,
-          rim: hsl(h + 12, 70, 85, 0.25),
+          rim: hsl(h + 12, 70, 85, 0.3),
         });
         bakeShading(sp, R);
         layers.push(sp);
       }
-      center = makeSprite(size * 0.26);
+      center = makeSprite(size * 0.30);
+      centerAO(center, size * 0.25);
       floretDisk(center, size * 0.22, hsl(40, 92, 40), hsl(50, 100, 60));
     }
 
@@ -472,7 +488,7 @@
       if (lb <= 0) continue;
       const eased = 1 - Math.pow(1 - lb, 2);
       const s = (0.15 + 0.85 * eased) * breath;
-      const lift = li * fl.size * 0.045; // how far this layer rises off the disc
+      const lift = li * fl.size * 0.065; // how far this layer rises off the disc
 
       const sp = layers[li];
       ctx.save();
@@ -486,7 +502,7 @@
 
     const cb = Math.min(1, bloom * 1.5);
     if (cb > 0.05) {
-      const lift = n * fl.size * 0.045;
+      const lift = n * fl.size * 0.065;
       ctx.save();
       ctx.translate(-tiltX * lift, -tiltY * lift);
       ctx.rotate(fl.spin * 0.3);
@@ -499,9 +515,12 @@
     ctx.restore();
   }
 
+  let flowerId = 0;
+
   function baseFlower(type, size) {
     return {
       type, size,
+      id: flowerId++,
       sprites: buildSprites(type, size, rand(-7, 7)),
       spin: rand(0, TAU),
       spinSpeed: rand(-0.15, 0.15),
@@ -539,6 +558,8 @@
     fl.vy = rand(20, 42) * (reducedMotion ? 0.3 : 1);
     fl.y = H + rand(20, 140);
     fl.ox = 0; fl.oy = 0;
+    fl.z = Math.sin(fl.theta);
+    fl.yDraw = fl.y;
 
     if (opts.x !== undefined) {
       fl.y = opts.y;
@@ -559,12 +580,15 @@
 
     if (fl.y < -fl.size * 2) Object.assign(fl, makeRiser({ type: fl.type }));
 
-    // springy push from the cursor
     const rx = funnelRadius(fl.y, fl);
     fl.z = Math.sin(fl.theta);
     fl.x = CX + Math.cos(fl.theta) * rx;
+    // the swirl ring is tilted toward the viewer: flowers ride lower when
+    // in front, higher when behind — like looking down onto the orbit
+    fl.yDraw = fl.y + fl.z * clamp(clearRadius * 0.20, 26, 64);
+    // springy push from the cursor
     if (mouse.active && !reducedMotion) {
-      const dx = fl.x - mouse.x, dy = fl.y - mouse.y;
+      const dx = fl.x - mouse.x, dy = fl.yDraw - mouse.y;
       const d = Math.hypot(dx, dy);
       if (d < 150 && d > 0.001) {
         const force = (1 - d / 150) * 85 * dt;
@@ -579,14 +603,14 @@
   function riserAlphaScale(fl) {
     const depth = (fl.z + 1) / 2;                       // 0 back … 1 front
     const persp = 0.78 + 0.5 * clamp(fl.y / H, 0, 1);   // lower = closer
-    const scale = (0.72 + 0.46 * depth) * persp;
-    let alpha = 0.82 + 0.18 * depth;
+    const scale = (0.60 + 0.58 * depth) * persp;
+    let alpha = 0.62 + 0.38 * depth;                    // far = hazier
     const fadeBand = H * 0.14;
-    if (fl.y < fadeBand) alpha *= clamp(fl.y / fadeBand, 0, 1);
+    if (fl.yDraw < fadeBand) alpha *= clamp(fl.yDraw / fadeBand, 0, 1);
     // go ghostly while crossing in front of the name so it stays readable
     if (fl.z > 0) {
       const inX = clamp(1 - Math.abs(fl.x - CX) / clearRadius, 0, 1);
-      const inY = clamp(1 - Math.abs(fl.y - CY) / (clearRadius * 0.6), 0, 1);
+      const inY = clamp(1 - Math.abs(fl.yDraw - CY) / (clearRadius * 0.6), 0, 1);
       alpha *= 1 - 0.62 * Math.sin(inX * Math.PI / 2) * Math.sin(inY * Math.PI / 2);
     }
     return { scale, alpha };
@@ -712,19 +736,22 @@
       ctx.fillRect(b.x - b.r, b.y - b.r, b.r * 2, b.r * 2);
     }
 
-    // warm halo behind the name
-    const glow = ctx.createRadialGradient(CX, CY, 0, CX, CY, clearRadius * 1.9);
-    glow.addColorStop(0, "rgba(255,165,90,0.13)");
-    glow.addColorStop(1, "rgba(255,165,90,0)");
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, W, H);
-
     // dark garden mound grounding the bed
     const mound = ctx.createLinearGradient(0, H * 0.78, 0, H);
     mound.addColorStop(0, "rgba(16,6,14,0)");
     mound.addColorStop(1, "rgba(12,4,10,0.9)");
     ctx.fillStyle = mound;
     ctx.fillRect(0, H * 0.78, W, H * 0.22);
+  }
+
+  // warm halo behind the name — drawn over the far flowers, so depth
+  // reads as atmosphere: the farther a flower, the more it sinks into glow
+  function drawHalo() {
+    const glow = ctx.createRadialGradient(CX, CY, 0, CX, CY, clearRadius * 1.9);
+    glow.addColorStop(0, "rgba(255,165,90,0.16)");
+    glow.addColorStop(1, "rgba(255,165,90,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, W, H);
   }
 
   function drawMotes(t) {
@@ -758,22 +785,26 @@
 
     drawBackground(dt);
 
-    // update all risers, then split by depth around the name
+    // update all risers, then split by depth around the name.
+    // quantized depth + id tie-break keeps the paint order stable when two
+    // flowers sit at nearly the same depth (no z-fighting flicker)
     for (const fl of risers) updateRiser(fl, dt, t);
-    risers.sort((a, b) => a.z - b.z);
+    risers.sort((a, b) =>
+      (Math.round(a.z * 24) - Math.round(b.z * 24)) || (a.id - b.id));
 
     for (const fl of risers) {
       if (fl.z >= 0) break;
       const { scale, alpha } = riserAlphaScale(fl);
-      drawFlower(fl, t, fl.x + fl.ox, fl.y + fl.oy, scale, alpha);
+      drawFlower(fl, t, fl.x + fl.ox, fl.yDraw + fl.oy, scale, alpha);
     }
 
+    drawHalo();
     drawName(t);
 
     for (const fl of risers) {
       if (fl.z < 0) continue;
       const { scale, alpha } = riserAlphaScale(fl);
-      drawFlower(fl, t, fl.x + fl.ox, fl.y + fl.oy, scale, alpha);
+      drawFlower(fl, t, fl.x + fl.ox, fl.yDraw + fl.oy, scale, alpha);
     }
 
     // floating hearts
