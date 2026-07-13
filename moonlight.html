@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Flowers from Jon</title>
-<meta name="theme-color" content="#1a1033">
+<meta name="theme-color" content="#0d0820">
 <meta property="og:title" content="Flowers from Jon">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://flowers.wcomops.com/moonlight.html">
@@ -12,12 +12,37 @@
 <meta name="twitter:title" content="Flowers from Jon">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #140c26; }
-  #lake { position: fixed; inset: 0; display: block; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0820; }
+  canvas { position: fixed; inset: 0; display: block; }
+  #sky { z-index: 0; }
+  #fx { z-index: 1; }
+
+  .film-btn {
+    position: fixed;
+    bottom: 1.1rem;
+    font-size: 1.7rem;
+    line-height: 1;
+    color: rgba(255, 228, 195, 0.7);
+    text-decoration: none;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1.4s ease, color 0.3s ease;
+    z-index: 3;
+    cursor: pointer;
+    user-select: none;
+  }
+  .film-btn.show { opacity: 1; pointer-events: auto; }
+  .film-btn:hover { color: rgba(255, 240, 215, 1); }
+  #film-replay { right: 1.3rem; }
+  #film-home { left: 1.3rem; }
 </style>
 </head>
 <body>
-<canvas id="lake"></canvas>
+<canvas id="sky"></canvas>
+<canvas id="fx"></canvas>
+<div id="film-replay" class="film-btn" role="button" aria-label="replay">&#8635;</div>
+<a id="film-home" class="film-btn" aria-label="interactive bouquet">&#128144;</a>
 
 <script>
 (function () {
@@ -28,40 +53,283 @@
   const NAME = (params.get("name") || "Mary").slice(0, 24);
   document.title = "A Bouquet for " + NAME;
 
-  const canvas = document.getElementById("lake");
-  const ctx = canvas.getContext("2d");
+  const fxCanvas = document.getElementById("fx");
+  const ctx = fxCanvas.getContext("2d");
+  const skyCanvas = document.getElementById("sky");
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const TAU = Math.PI * 2;
   const GOLDEN = 2.399963;
 
   let W = 0, H = 0, DPR = 1;
-  let NX = 0, NY = 0;      // name position
-  let WL = 0;              // waterline
-  let MOONX = 0, MOONY = 0, MOONR = 0;
-  let HEADX = 0, HEADY = 0;  // where the marigold's face rests
-  let sceneT = 0;
+  let NX = 0, NY = 0;
+  let WL = 0;
+  let HEADX = 0, HEADY = 0;
+  let movieT = 0;
   let nameSprite = null;
   let flower = null;
   let stemPts = [], stemLen = 0;
+  let iconsShown = false;
 
   const rand = (a, b) => a + Math.random() * (b - a);
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const smooth = (v) => v * v * (3 - 2 * v);
   const hsl = (h, s, l, a = 1) => `hsla(${h.toFixed(1)},${s.toFixed(1)}%,${l.toFixed(1)}%,${a})`;
 
-  const mouse = { x: 0.5, y: 0.5 };
-  const stars = [];
-  const clouds = [];
-  const fireflies = [];
   const pollen = [];
   const airPetals = [];
   const waterPetals = [];
   const ripples = [];
-  const glints = [];
+  const fireflies = [];
   const leaves = [];
   let shootingStar = null;
   let nextShooting = 9;
-  let nextShed = 12;
+  let nextShed = 20;
+
+  // ---------------------------------------------------------------
+  // Film timeline (~30s)
+  //   0–2.5 fade in under stars · 1.5–7 the moon rises over the lake
+  //   6.5–10.5 the stem climbs from the corner · 10.5–17.5 the marigold
+  //   opens petal ring by petal ring · 17+ golden pollen drifts skyward
+  //   23.5–27.5 the name glows into the night · then a living hold
+  // ---------------------------------------------------------------
+  const moonRise = () => reducedMotion ? 1 : smooth(clamp((movieT - 1.5) / 5.5, 0, 1));
+  const stemProgress = () => reducedMotion ? 1 : smooth(clamp((movieT - 6.5) / 4.0, 0, 1));
+  const bloomAmount = () => reducedMotion ? 1 : smooth(clamp((movieT - 10.5) / 7.0, 0, 1));
+  const nameAlpha = () => reducedMotion ? 1 : smooth(clamp((movieT - 23.5) / 4.0, 0, 1));
+
+  // ---------------------------------------------------------------
+  // Ray-traced sky & water (WebGL). Every water pixel casts a ray,
+  // reflects it off animated wave normals with fresnel falloff, and
+  // samples the same sky the eye sees — so the moon, hills, and the
+  // name's golden light truly mirror in the lake.
+  // ---------------------------------------------------------------
+  let gl = null, glProg = null, glUniforms = {};
+
+  const VSRC = `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+  const FSRC = `
+precision highp float;
+uniform vec2 uRes;
+uniform float uT;
+uniform float uMoon;      // 0 below the hills .. 1 fully risen
+uniform float uName;      // the name's light
+uniform vec2 uNameNdc;
+uniform float uFlower;    // warm light of the bloom
+uniform vec2 uFlowerNdc;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+  return v;
+}
+
+vec3 rayDir(vec2 ndc) {
+  float aspect = uRes.x / uRes.y;
+  return normalize(vec3(ndc.x * aspect * 0.9, (ndc.y + 0.28) * 0.9, -1.9));
+}
+
+vec3 moonDir() {
+  float el = mix(-0.10, 0.40, uMoon);
+  float az = -0.55;
+  return normalize(vec3(sin(az) * cos(el), sin(el), -cos(az) * cos(el)));
+}
+
+float ridge(float az) { // sleeping hills on the far shore
+  return 0.010 + 0.016 * sin(az * 2.1 + 1.7) + 0.010 * sin(az * 4.7 + 0.6) + 0.005 * sin(az * 9.3);
+}
+
+vec3 skyColor(vec3 rd, float stars) {
+  float y = max(rd.y, -0.05);
+  vec3 col = mix(vec3(0.150, 0.095, 0.230), vec3(0.045, 0.030, 0.105), smoothstep(0.0, 0.55, y));
+  col += vec3(0.13, 0.055, 0.09) * exp(-abs(rd.y) * 12.0);   // dusk warmth at the horizon
+  col += vec3(0.10, 0.045, 0.075) * exp(-abs(rd.y) * 3.0) * 0.5;
+
+  vec3 md = moonDir();
+  float d = max(dot(rd, md), 0.0);
+  float lum = 0.35 + 0.65 * uMoon;
+  col += vec3(0.95, 0.85, 0.66) * pow(d, 220.0) * 0.35 * lum;
+  col += vec3(0.70, 0.58, 0.52) * pow(d, 9.0) * 0.15 * lum;
+
+  // moon disc with a hint of maria — kept brighter than its halo
+  float ang = acos(clamp(dot(rd, md), -1.0, 1.0));
+  float disc = 1.0 - smoothstep(0.0285, 0.0308, ang);
+  if (disc > 0.0) {
+    float shade = 0.90 + 0.10 * (1.0 - smoothstep(0.0, 0.03, ang));
+    float cr = fbm(rd.xy * 55.0 + 13.1);
+    vec3 mcol = vec3(1.06, 1.02, 0.90) * shade * (0.92 + 0.08 * cr) * (0.55 + 0.45 * uMoon);
+    col = mix(col, mcol, disc);
+  }
+
+  // stars
+  if (rd.y > 0.02 && stars > 0.0) {
+    vec2 sc = vec2(atan(rd.x, -rd.z) * 2.6, rd.y * 5.0);
+    vec2 cell = floor(sc * 34.0);
+    float h = hash(cell);
+    if (h > 0.915) {
+      vec2 f = fract(sc * 34.0) - 0.5;
+      float tw = 0.45 + 0.55 * sin(uT * (0.8 + h * 3.0) + h * 40.0);
+      float star = smoothstep(0.30, 0.0, length(f)) * tw;
+      col += vec3(0.85, 0.88, 1.0) * star * (h - 0.915) * 10.0 * stars;
+    }
+  }
+
+  // a breath of high cloud
+  float cl = fbm(vec2(rd.x * 2.6 + uT * 0.006, rd.y * 5.5 + 3.0));
+  col += vec3(0.32, 0.26, 0.40) * 0.045 * smoothstep(0.55, 0.85, cl) * smoothstep(0.0, 0.2, rd.y);
+
+  // the name's golden light, and the bloom's warmth
+  vec3 nd = rayDir(uNameNdc);
+  float dn = max(dot(rd, nd), 0.0);
+  col += vec3(1.00, 0.76, 0.38) * pow(dn, 700.0) * 1.0 * uName;
+  col += vec3(1.00, 0.72, 0.36) * pow(dn, 60.0) * 0.22 * uName;
+  vec3 fd = rayDir(uFlowerNdc);
+  float df = max(dot(rd, fd), 0.0);
+  col += vec3(1.00, 0.55, 0.18) * pow(df, 500.0) * 0.5 * uFlower;
+  col += vec3(1.00, 0.55, 0.20) * pow(df, 70.0) * 0.10 * uFlower;
+
+  // hills occlude the sky just above the waterline
+  if (rd.y >= 0.0) {
+    float az = atan(rd.x, -rd.z);
+    float h2 = ridge(az);
+    float hill = 1.0 - smoothstep(h2 - 0.004, h2 + 0.004, rd.y);
+    vec3 hillCol = vec3(0.075, 0.045, 0.125) + vec3(0.05, 0.02, 0.04) * exp(-abs(rd.y) * 30.0);
+    col = mix(col, hillCol, hill);
+  }
+  return col;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 ndc = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);
+  vec3 rd = rayDir(ndc);
+  vec3 ro = vec3(0.0, 1.5, 0.0);
+  vec3 col;
+
+  if (rd.y < -0.003) {
+    // cast the ray onto the lake
+    float t = ro.y / -rd.y;
+    vec3 pos = ro + rd * t;
+    float att = exp(-t * 0.015);
+    vec2 p = pos.xz * 0.30 + vec2(0.0, uT * 0.10);
+    float e = 0.08;
+    float h0 = fbm(p);
+    float hx = fbm(p + vec2(e, 0.0));
+    float hz = fbm(p + vec2(0.0, e));
+    // finer chop layered on the swell
+    vec2 p2 = pos.xz * 1.3 + vec2(uT * 0.22, -uT * 0.13);
+    float g0 = fbm(p2);
+    float gx = fbm(p2 + vec2(e, 0.0));
+    float gz = fbm(p2 + vec2(0.0, e));
+    vec3 n = normalize(vec3(
+      ((h0 - hx) * 0.55 + (g0 - gx) * 0.22) / e * att,
+      1.0,
+      ((h0 - hz) * 0.55 + (g0 - gz) * 0.22) / e * att
+    ));
+    vec3 rr = reflect(rd, n);
+    rr.y = abs(rr.y) + 0.015;
+    rr = normalize(rr);
+    vec3 refl = skyColor(rr, 0.35);
+    float fres = 0.05 + 0.95 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);
+    vec3 deep = vec3(0.040, 0.026, 0.080);
+    col = mix(deep, refl, clamp(fres * 1.8, 0.0, 1.0));
+    float fog = smoothstep(24.0, 130.0, t);
+    col = mix(col, vec3(0.135, 0.085, 0.180), fog * 0.75);
+  } else {
+    col = skyColor(rd, 1.0);
+  }
+
+  col = pow(col, vec3(0.92)); // gentle lift
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+  function initGL() {
+    gl = skyCanvas.getContext("webgl", { antialias: false, depth: false, alpha: false });
+    if (!gl) return false;
+    function sh(type, src) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        gl = null;
+        return null;
+      }
+      return s;
+    }
+    const vs = sh(gl.VERTEX_SHADER, VSRC);
+    if (!vs) return false;
+    const fs = sh(gl.FRAGMENT_SHADER, FSRC);
+    if (!fs) return false;
+    glProg = gl.createProgram();
+    gl.attachShader(glProg, vs);
+    gl.attachShader(glProg, fs);
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) { gl = null; return false; }
+    gl.useProgram(glProg);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(glProg, "aPos");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    for (const u of ["uRes", "uT", "uMoon", "uName", "uNameNdc", "uFlower", "uFlowerNdc"]) {
+      glUniforms[u] = gl.getUniformLocation(glProg, u);
+    }
+    return true;
+  }
+
+  const ndcOf = (x, y) => [(x / W) * 2 - 1, 1 - (y / H) * 2];
+
+  function drawShaderBackground(t) {
+    gl.viewport(0, 0, skyCanvas.width, skyCanvas.height);
+    gl.uniform2f(glUniforms.uRes, skyCanvas.width, skyCanvas.height);
+    gl.uniform1f(glUniforms.uT, reducedMotion ? 0 : t);
+    gl.uniform1f(glUniforms.uMoon, moonRise());
+    gl.uniform1f(glUniforms.uName, nameAlpha());
+    const nn = ndcOf(NX, NY);
+    gl.uniform2f(glUniforms.uNameNdc, nn[0], nn[1]);
+    gl.uniform1f(glUniforms.uFlower, bloomAmount() * 0.8);
+    const fn = ndcOf(HEADX, HEADY);
+    gl.uniform2f(glUniforms.uFlowerNdc, fn[0], fn[1]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // 2D fallback background if WebGL is unavailable
+  function drawFallbackBackground(t) {
+    const rise = moonRise();
+    let g = ctx.createLinearGradient(0, 0, 0, WL);
+    g.addColorStop(0, "#130c2b");
+    g.addColorStop(0.85, "#3a2050");
+    g.addColorStop(1, "#4b2a56");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    const mx = W * 0.15, my = H * (0.55 - 0.38 * rise);
+    const mr = clamp(Math.min(W, H) * 0.06, 24, 58);
+    g = ctx.createRadialGradient(mx, my, 0, mx, my, mr * 4);
+    g.addColorStop(0, "rgba(250,240,215,0.3)");
+    g.addColorStop(1, "rgba(250,240,215,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(mx - mr * 4, my - mr * 4, mr * 8, mr * 8);
+    ctx.fillStyle = "#f5edd8";
+    ctx.beginPath();
+    ctx.arc(mx, my, mr, 0, TAU);
+    ctx.fill();
+    g = ctx.createLinearGradient(0, WL, 0, H);
+    g.addColorStop(0, "#3d2450");
+    g.addColorStop(1, "#120b24");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, WL, W, H - WL);
+  }
 
   // ---------------------------------------------------------------
   // The name — kept from the bouquet pages
@@ -71,7 +339,6 @@
     const font = `italic bold ${fontSize}px Georgia, "Palatino Linotype", serif`;
     ctx.font = font;
     const textW = ctx.measureText(NAME).width;
-
     const pad = fontSize * 0.6;
     const c = document.createElement("canvas");
     const lw = textW + pad * 2;
@@ -82,7 +349,6 @@
     g.scale(DPR, DPR);
     g.textAlign = "center";
     g.textBaseline = "middle";
-
     const nx = lw / 2, ny = pad + fontSize * 0.62;
     g.font = font;
     g.shadowColor = "rgba(255,170,90,0.85)";
@@ -99,13 +365,7 @@
     grad.addColorStop(1, "#e08a3c");
     g.fillStyle = grad;
     g.fillText(NAME, nx, ny);
-
     nameSprite = { canvas: c, w: lw, h: lh, ox: nx, oy: ny };
-  }
-
-  function nameAlpha() {
-    if (reducedMotion) return 1;
-    return smooth(clamp((sceneT - 9) / 3.5, 0, 1));
   }
 
   function drawName(t) {
@@ -126,33 +386,8 @@
     ctx.restore();
   }
 
-  // a soft, dissolving shimmer of the name on the water — more a memory
-  // of light than a mirror
-  function drawNameReflection(t) {
-    const a = nameAlpha() * 0.085;
-    if (!nameSprite || a <= 0) return;
-    const s = nameSprite;
-    const top = WL + 8;
-    const strips = 14;
-    const sh = s.h / strips;
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter"; // pure light on the water
-    for (let i = 0; i < strips; i++) {
-      const depth = i / strips;
-      const wob = reducedMotion ? 0 : Math.sin(t * 1.4 + i * 1.1) * (2 + depth * 8);
-      ctx.globalAlpha = a * (1 - depth * 0.85);
-      ctx.drawImage(
-        s.canvas,
-        0, (strips - 1 - i) * sh * DPR, s.w * DPR, sh * DPR,
-        NX - s.ox + wob, top + i * sh * 0.42, s.w, sh * 0.42 + 1
-      );
-    }
-    ctx.restore();
-  }
-
   // ---------------------------------------------------------------
-  // The marigold — layered sprites, seen in three-quarter view on a
-  // tall curved stem in the foreground
+  // The marigold — three-quarter view on its tall foreground stem
   // ---------------------------------------------------------------
   function marigoldPetalPath(g, L, w) {
     const r0 = L * 0.10;
@@ -208,7 +443,6 @@
         g.stroke();
         g.restore();
       }
-      // moonlight from the left, shade on the right
       g.save();
       g.globalCompositeOperation = "source-atop";
       let sg = g.createRadialGradient(-R * 0.55, -R * 0.35, 0, -R * 0.55, -R * 0.35, R * 1.8);
@@ -225,7 +459,6 @@
       layers.push(sp);
     }
 
-    // floret spiral eye
     const center = makeSprite(size * 0.20);
     const cg = center.g;
     const CR = size * 0.15;
@@ -253,27 +486,15 @@
     return { layers, center, size, hue: h };
   }
 
-  function stemProgress() {
-    if (reducedMotion) return 1;
-    return smooth(clamp((sceneT - 1.2) / 3.2, 0, 1));
-  }
-
-  function bloomAmount() {
-    if (reducedMotion) return 1;
-    return smooth(clamp((sceneT - 4.2) / 4.5, 0, 1));
-  }
-
-  // three-quarter view: squashed vertically, layers lifted toward the
-  // viewer's upper-left, whole head nodding toward the name
-  function drawHead(t, alphaMul) {
+  function drawHead(t) {
     const bloom = bloomAmount();
-    if (bloom <= 0 || alphaMul <= 0) return;
+    if (bloom <= 0) return;
     const sway = reducedMotion ? 0 : Math.sin(t * 0.5) * 0.035;
     const breath = reducedMotion ? 1 : 1 + Math.sin(t * 0.85) * 0.012;
     ctx.save();
     ctx.translate(HEADX, HEADY);
-    ctx.rotate(-0.30 + sway); // leaning toward the name
-    ctx.scale(1, 0.74);       // seen from the side, not from above
+    ctx.rotate(-0.30 + sway);
+    ctx.scale(1, 0.74);
     const n = flower.layers.length;
     for (let li = 0; li < n; li++) {
       const delay = li / (n + 1);
@@ -287,7 +508,6 @@
       ctx.translate(-0.18 * lift, -0.95 * lift);
       ctx.rotate((1 - eased) * 0.35);
       ctx.scale(s, s);
-      ctx.globalAlpha = alphaMul;
       ctx.drawImage(sp.canvas, -sp.logical / 2, -sp.logical / 2, sp.logical, sp.logical);
       ctx.restore();
     }
@@ -297,7 +517,6 @@
       ctx.save();
       ctx.translate(-0.18 * lift, -0.95 * lift);
       ctx.scale(cb * breath, cb * breath);
-      ctx.globalAlpha = alphaMul;
       const c = flower.center;
       ctx.drawImage(c.canvas, -c.logical / 2, -c.logical / 2, c.logical, c.logical);
       ctx.restore();
@@ -306,8 +525,7 @@
   }
 
   // ---------------------------------------------------------------
-  // Stem, leaves, calyx — a tall foreground flower rising from the
-  // bottom-right corner of the frame
+  // Stem, leaves, calyx
   // ---------------------------------------------------------------
   function buildStem() {
     const P0 = { x: W * 0.94, y: H + 40 };
@@ -357,7 +575,6 @@
     ctx.quadraticCurveTo(len * 0.5, -len * 0.30, len, -len * 0.05);
     ctx.quadraticCurveTo(len * 0.5, len * 0.20, 0, 0);
     ctx.fill();
-    // moonlit edge
     ctx.strokeStyle = "rgba(210,235,215,0.22)";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -372,10 +589,8 @@
     if (prog <= 0.01) return;
     const endD = prog * stemLen;
     const sway = reducedMotion ? 0 : Math.sin(t * 0.5) * 2.5;
-
     const lw = Math.max(3, flower.size * 0.09);
     ctx.lineCap = "round";
-    // dark body
     ctx.strokeStyle = "#1c3423";
     ctx.lineWidth = lw;
     ctx.beginPath();
@@ -386,7 +601,6 @@
       ctx.lineTo(stemPts[i].x + sway * f, stemPts[i].y);
     }
     ctx.stroke();
-    // moonlit rim on the left
     ctx.strokeStyle = "rgba(190,230,200,0.30)";
     ctx.lineWidth = lw * 0.28;
     ctx.beginPath();
@@ -404,7 +618,6 @@
       drawLeafShape(lf.x + sway * lf.u, lf.y, lf.ang, lf.len * grow, leafSway * lf.side);
     }
 
-    // calyx cradling the head once the stem arrives
     if (prog > 0.97) {
       const bx = HEADX + flower.size * 0.16 + sway, by = HEADY + flower.size * 0.40;
       ctx.fillStyle = "#234427";
@@ -423,170 +636,40 @@
   }
 
   // ---------------------------------------------------------------
-  // Scene seeding
+  // Fireflies, pollen, petals, ripples, shooting star (2D overlay)
   // ---------------------------------------------------------------
-  function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth;
-    H = window.innerHeight;
-    canvas.width = W * DPR;
-    canvas.height = H * DPR;
-    canvas.style.width = W + "px";
-    canvas.style.height = H + "px";
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-
-    NX = W * 0.46;
-    NY = H * 0.27;
-    WL = H * 0.64;
-    MOONX = W * 0.15;
-    MOONY = H * 0.17;
-    MOONR = clamp(Math.min(W, H) * 0.065, 26, 62);
-
-    flower = buildMarigold(clamp(Math.min(W, H) * 0.155, 55, 110));
-    HEADX = W * 0.72;
-    HEADY = H * 0.46;
-
-    renderName();
-    buildStem();
-
-    stars.length = 0;
-    const nStars = Math.round((W * H) / 9000);
-    for (let i = 0; i < nStars; i++) {
-      stars.push({
-        x: rand(0, W), y: rand(0, WL * 0.96),
-        r: rand(0.4, 1.7),
-        tw: rand(0.4, 2.2), ph: rand(0, TAU),
-        warm: Math.random() < 0.2,
-      });
-    }
-
-    clouds.length = 0;
-    for (let i = 0; i < 3; i++) {
-      clouds.push({
-        x: rand(0, W), y: rand(H * 0.06, H * 0.4),
-        w: rand(W * 0.25, W * 0.45), h: rand(30, 60),
-        v: rand(2, 6) * (Math.random() < 0.5 ? -1 : 1),
-        a: rand(0.03, 0.06),
-      });
-    }
-
-    fireflies.length = 0;
-    for (let i = 0; i < 9; i++) {
-      fireflies.push({
-        x: rand(W * 0.05, W * 0.6), y: rand(WL - 40, H * 0.86),
-        ph: rand(0, TAU), sp: rand(0.5, 1.3),
-        dx: rand(0, TAU), dy: rand(0, TAU),
-      });
-    }
-
-    glints.length = 0;
-    for (let i = 0; i < 46; i++) {
-      glints.push({
-        y: rand(WL + 6, H - 8),
-        ph: rand(0, TAU), sp: rand(0.6, 1.8),
-        len: rand(6, 26),
-      });
-    }
-  }
-
-  // ---------------------------------------------------------------
-  // Sky, hills, moon, water
-  // ---------------------------------------------------------------
-  function drawSky(t) {
-    const g = ctx.createLinearGradient(0, 0, 0, WL);
-    g.addColorStop(0, "#130c2b");
-    g.addColorStop(0.55, "#241543");
-    g.addColorStop(0.88, "#3a2050");
-    g.addColorStop(1, "#4b2a56");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, WL);
-
-    const px = (mouse.x - 0.5) * 8, py = (mouse.y - 0.5) * 4;
-    for (const s of stars) {
-      const a = 0.25 + 0.75 * Math.pow((Math.sin(t * s.tw + s.ph) + 1) / 2, 2);
-      ctx.fillStyle = s.warm ? `rgba(255,226,180,${a * 0.9})` : `rgba(235,240,255,${a * 0.8})`;
+  function drawFireflies(t) {
+    const vis = moonRise();
+    if (vis <= 0.3) return;
+    for (const f of fireflies) {
+      const x = f.x + Math.sin(t * 0.29 * f.sp + f.dx) * 46;
+      const y = f.y + Math.sin(t * 0.22 * f.sp + f.dy) * 26;
+      const pulse = (0.2 + 0.8 * Math.pow(Math.abs(Math.sin(t * f.sp + f.ph)), 2)) * (vis - 0.3) / 0.7;
+      const r = 4 + pulse * 4;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(255,238,180,${0.45 * pulse})`);
+      g.addColorStop(1, "rgba(255,238,180,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      ctx.fillStyle = `rgba(255,250,225,${0.8 * pulse})`;
       ctx.beginPath();
-      ctx.arc(s.x + px * s.r, s.y + py * s.r, s.r, 0, TAU);
+      ctx.arc(x, y, 1, 0, TAU);
       ctx.fill();
     }
-
-    for (const c of clouds) {
-      const g2 = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.w / 2);
-      g2.addColorStop(0, `rgba(200,170,220,${c.a})`);
-      g2.addColorStop(1, "rgba(200,170,220,0)");
-      ctx.fillStyle = g2;
-      ctx.save();
-      ctx.translate(c.x, c.y);
-      ctx.scale(1, c.h / (c.w / 2));
-      ctx.translate(-c.x, -c.y);
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, c.w / 2, 0, TAU);
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  // low hills asleep on the far shore
-  function drawHills() {
-    ctx.fillStyle = "#251536";
-    ctx.beginPath();
-    ctx.moveTo(0, WL);
-    ctx.quadraticCurveTo(W * 0.12, WL - H * 0.055, W * 0.28, WL - H * 0.012);
-    ctx.quadraticCurveTo(W * 0.42, WL + 2, W * 0.58, WL - H * 0.03);
-    ctx.quadraticCurveTo(W * 0.72, WL - H * 0.055, W, WL - H * 0.008);
-    ctx.lineTo(W, WL);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#1c0f2b";
-    ctx.beginPath();
-    ctx.moveTo(0, WL);
-    ctx.quadraticCurveTo(W * 0.10, WL - H * 0.028, W * 0.24, WL - H * 0.004);
-    ctx.quadraticCurveTo(W * 0.5, WL + 4, W * 0.8, WL - H * 0.014);
-    ctx.quadraticCurveTo(W * 0.92, WL - H * 0.02, W, WL - H * 0.002);
-    ctx.lineTo(W, WL);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  function drawMoon(t) {
-    const px = (mouse.x - 0.5) * -14, py = (mouse.y - 0.5) * -8;
-    const mx = MOONX + px, my = MOONY + py;
-    let g = ctx.createRadialGradient(mx, my, 0, mx, my, MOONR * 4.2);
-    g.addColorStop(0, "rgba(250,240,215,0.30)");
-    g.addColorStop(0.35, "rgba(240,220,200,0.10)");
-    g.addColorStop(1, "rgba(240,220,200,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(mx - MOONR * 4.2, my - MOONR * 4.2, MOONR * 8.4, MOONR * 8.4);
-
-    g = ctx.createRadialGradient(mx - MOONR * 0.3, my - MOONR * 0.3, MOONR * 0.1, mx, my, MOONR);
-    g.addColorStop(0, "#fbf6e6");
-    g.addColorStop(0.85, "#efe2c8");
-    g.addColorStop(1, "#e2d0b2");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(mx, my, MOONR, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = "rgba(190,170,150,0.25)";
-    for (const [dx, dy, r] of [[-0.3, 0.1, 0.16], [0.25, -0.22, 0.11], [0.1, 0.32, 0.09], [-0.05, -0.1, 0.07]]) {
-      ctx.beginPath();
-      ctx.arc(mx + dx * MOONR, my + dy * MOONR, r * MOONR, 0, TAU);
-      ctx.fill();
-    }
-    return { mx, my };
   }
 
   function updateShootingStar(dt) {
     if (reducedMotion) return;
-    if (!shootingStar && sceneT > nextShooting) {
+    if (!shootingStar && movieT > nextShooting) {
       const fromLeft = Math.random() < 0.5;
       shootingStar = {
         x: fromLeft ? rand(-40, W * 0.25) : rand(W * 0.75, W + 40),
-        y: rand(H * 0.04, H * 0.30),
+        y: rand(H * 0.04, H * 0.28),
         vx: (fromLeft ? 1 : -1) * rand(480, 700),
         vy: rand(90, 170),
         life: 1,
       };
-      nextShooting = sceneT + rand(12, 26);
+      nextShooting = movieT + rand(12, 26);
     }
     if (shootingStar) {
       const s = shootingStar;
@@ -608,75 +691,27 @@
     }
   }
 
-  function drawWater(t, moon) {
-    let g = ctx.createLinearGradient(0, WL, 0, H);
-    g.addColorStop(0, "#3d2450");
-    g.addColorStop(0.25, "#291940");
-    g.addColorStop(1, "#120b24");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, WL, W, H - WL);
-
-    ctx.fillStyle = "rgba(255,220,190,0.12)";
-    ctx.fillRect(0, WL, W, 1.5);
-
-    const gx = moon.mx;
-    for (const gl of glints) {
-      const depth = (gl.y - WL) / (H - WL);
-      const spread = 14 + depth * MOONR * 2.6;
-      const a = (0.10 + 0.5 * Math.pow((Math.sin(t * gl.sp + gl.ph) + 1) / 2, 3)) * (1 - depth * 0.55);
-      const wob = Math.sin(t * 0.9 + gl.ph * 3) * spread * 0.4;
-      ctx.strokeStyle = `rgba(250,235,205,${a})`;
-      ctx.lineWidth = 1.1 + depth;
-      ctx.beginPath();
-      ctx.moveTo(gx + wob - gl.len / 2, gl.y);
-      ctx.lineTo(gx + wob + gl.len / 2, gl.y);
-      ctx.stroke();
-    }
-  }
-
-  function drawFireflies(t) {
-    for (const f of fireflies) {
-      const x = f.x + Math.sin(t * 0.29 * f.sp + f.dx) * 46;
-      const y = f.y + Math.sin(t * 0.22 * f.sp + f.dy) * 26;
-      const pulse = 0.2 + 0.8 * Math.pow(Math.abs(Math.sin(t * f.sp + f.ph)), 2);
-      const r = 4 + pulse * 4;
-      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, `rgba(255,238,180,${0.45 * pulse})`);
-      g.addColorStop(1, "rgba(255,238,180,0)");
-      ctx.fillStyle = g;
-      ctx.fillRect(x - r, y - r, r * 2, r * 2);
-      ctx.fillStyle = `rgba(255,250,225,${0.8 * pulse})`;
-      ctx.beginPath();
-      ctx.arc(x, y, 1, 0, TAU);
-      ctx.fill();
-    }
-  }
-
-  // ---------------------------------------------------------------
-  // Ripples, pollen, petals
-  // ---------------------------------------------------------------
   function spawnRipple(x, y, big) {
-    ripples.push({ x, y, r: big ? 6 : 3, v: big ? 34 : 22, a: big ? 0.5 : 0.32 });
+    ripples.push({ x, y, r: big ? 6 : 3, v: big ? 34 : 22, a: big ? 0.4 : 0.26 });
   }
 
   function drawRipples(dt) {
     for (let i = ripples.length - 1; i >= 0; i--) {
       const r = ripples[i];
       r.r += r.v * dt;
-      r.a -= dt * 0.22;
+      r.a -= dt * 0.2;
       if (r.a <= 0) { ripples.splice(i, 1); continue; }
-      ctx.strokeStyle = `rgba(235,215,235,${r.a})`;
+      ctx.strokeStyle = `rgba(240,225,240,${r.a})`;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.ellipse(r.x, r.y, r.r, r.r * 0.32, 0, 0, TAU);
+      ctx.ellipse(r.x, r.y, r.r, r.r * 0.30, 0, 0, TAU);
       ctx.stroke();
     }
   }
 
-  // golden dust drifting from the marigold across the sky to the name
   function updatePollen(dt, t) {
     const bloom = bloomAmount();
-    if (!reducedMotion && bloom > 0.65 && pollen.length < 36 && Math.random() < dt * 7) {
+    if (!reducedMotion && bloom > 0.75 && pollen.length < 36 && Math.random() < dt * 7) {
       pollen.push({
         x: HEADX + rand(-flower.size * 0.3, flower.size * 0.3),
         y: HEADY - flower.size * 0.35,
@@ -692,7 +727,7 @@
     ctx.globalCompositeOperation = "lighter";
     for (let i = pollen.length - 1; i >= 0; i--) {
       const p = pollen[i];
-      if (p.drift) { // ease toward the name in an arc
+      if (p.drift) {
         p.vx += ((NX - p.x) * 0.05 - p.vx * 0.35) * dt * 2.2;
         p.vy += ((NY - p.y) * 0.045 - p.vy * 0.30) * dt * 2.2;
       }
@@ -717,20 +752,16 @@
     g.quadraticCurveTo(0, s * 0.45, -s, 0);
   }
 
-  function shedPetal() {
-    airPetals.push({
-      x: HEADX + rand(-flower.size * 0.4, flower.size * 0.2),
-      y: HEADY + rand(-10, 10),
-      vx: rand(-30, -10), vy: rand(-6, 6),
-      rot: rand(0, TAU), rv: rand(-2, 2),
-      s: rand(5, 9), a: rand(0.65, 0.9),
-    });
-  }
-
   function updateAirPetals(dt, t) {
-    if (!reducedMotion && bloomAmount() > 0.9 && sceneT > nextShed) {
-      shedPetal();
-      nextShed = sceneT + rand(5, 11);
+    if (!reducedMotion && bloomAmount() > 0.95 && movieT > nextShed) {
+      airPetals.push({
+        x: HEADX + rand(-flower.size * 0.4, flower.size * 0.2),
+        y: HEADY + rand(-10, 10),
+        vx: rand(-30, -10), vy: rand(-6, 6),
+        rot: rand(0, TAU), rv: rand(-2, 2),
+        s: rand(5, 9), a: rand(0.65, 0.9),
+      });
+      nextShed = movieT + rand(5, 11);
     }
     for (let i = airPetals.length - 1; i >= 0; i--) {
       const p = airPetals[i];
@@ -778,57 +809,109 @@
   }
 
   // ---------------------------------------------------------------
+  // Layout & seeding
+  // ---------------------------------------------------------------
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    fxCanvas.width = W * DPR;
+    fxCanvas.height = H * DPR;
+    fxCanvas.style.width = W + "px";
+    fxCanvas.style.height = H + "px";
+    // the ray-traced background reads perfectly at reduced resolution
+    skyCanvas.width = Math.ceil(W * DPR * 0.55);
+    skyCanvas.height = Math.ceil(H * DPR * 0.55);
+    skyCanvas.style.width = W + "px";
+    skyCanvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    NX = W * 0.46;
+    NY = H * 0.26;
+    WL = H * 0.64; // matches the shader camera's horizon
+    flower = buildMarigold(clamp(Math.min(W, H) * 0.155, 55, 110));
+    HEADX = W * 0.72;
+    HEADY = H * 0.45;
+
+    renderName();
+    buildStem();
+
+    fireflies.length = 0;
+    for (let i = 0; i < 9; i++) {
+      fireflies.push({
+        x: rand(W * 0.05, W * 0.6), y: rand(WL - 30, H * 0.86),
+        ph: rand(0, TAU), sp: rand(0.5, 1.3),
+        dx: rand(0, TAU), dy: rand(0, TAU),
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------
   // Main loop
   // ---------------------------------------------------------------
   let last = performance.now();
+  let filmStart = null;
 
   function frame(now) {
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
     const t = now / 1000;
-    sceneT += dt;
+    // the film clock follows real time, whatever the frame rate
+    if (filmStart === null) filmStart = now - (reducedMotion ? 40000 : 0);
+    movieT = (now - filmStart) / 1000;
 
-    drawSky(t);
-    const moon = drawMoon(t);
+    if (gl) {
+      drawShaderBackground(t);
+      ctx.clearRect(0, 0, W, H);
+    } else {
+      drawFallbackBackground(t);
+    }
+
     updateShootingStar(dt);
     drawName(t);
-    drawHills();
-    drawWater(t, moon);
     drawRipples(dt);
     drawFireflies(t);
     updateWaterPetals(dt, t);
-
-    // the foreground marigold
     drawStem(t);
-    drawHead(t, 1);
+    drawHead(t);
     updateAirPetals(dt, t);
     updatePollen(dt, t);
 
-    // gentle vignette
+    // vignette
     const v = ctx.createRadialGradient(W * 0.5, H * 0.45, Math.min(W, H) * 0.45, W * 0.5, H * 0.45, Math.hypot(W, H) * 0.62);
     v.addColorStop(0, "rgba(0,0,0,0)");
-    v.addColorStop(1, "rgba(5,2,12,0.55)");
+    v.addColorStop(1, "rgba(5,2,12,0.5)");
     ctx.fillStyle = v;
     ctx.fillRect(0, 0, W, H);
 
+    // cinematic letterbox for the film, lifting for the living hold
     if (!reducedMotion) {
-      const fade = 1 - smooth(clamp(sceneT / 2.4, 0, 1));
+      const bar = H * 0.082 * smooth(clamp(movieT / 1.4, 0, 1)) *
+        (1 - smooth(clamp((movieT - 30.5) / 1.8, 0, 1)));
+      if (bar > 0.5) {
+        ctx.fillStyle = "#030109";
+        ctx.fillRect(0, 0, W, bar);
+        ctx.fillRect(0, H - bar, W, bar);
+      }
+      const fade = 1 - smooth(clamp(movieT / 2.6, 0, 1));
       if (fade > 0) {
-        ctx.fillStyle = `rgba(2,1,6,${fade})`;
+        ctx.fillStyle = `rgba(1,0,4,${fade})`;
         ctx.fillRect(0, 0, W, H);
       }
+    }
+
+    if (!iconsShown && movieT > 31) {
+      iconsShown = true;
+      document.getElementById("film-replay").classList.add("show");
+      document.getElementById("film-home").classList.add("show");
     }
 
     requestAnimationFrame(frame);
   }
 
   // ---------------------------------------------------------------
-  // Interaction: parallax + touch the water or the sky
+  // Interaction: touch the water or the sky; replay / home
   // ---------------------------------------------------------------
-  window.addEventListener("mousemove", (e) => {
-    mouse.x = e.clientX / W;
-    mouse.y = e.clientY / H;
-  });
   function touch(x, y) {
     if (y > WL) {
       spawnRipple(x, y, true);
@@ -851,12 +934,14 @@
     if (t0) touch(t0.clientX, t0.clientY);
   }, { passive: true });
   window.addEventListener("resize", resize);
+  document.getElementById("film-replay").addEventListener("click", () => location.reload());
+  document.getElementById("film-home").href = "./" + location.search;
 
   // ---------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------
   resize();
-  if (reducedMotion) sceneT = 20;
+  initGL();
   requestAnimationFrame(frame);
 })();
 </script>
