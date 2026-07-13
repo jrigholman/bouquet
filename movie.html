@@ -24,28 +24,33 @@
     position: fixed;
     inset: 0;
     display: block;
-    cursor: crosshair;
   }
 
-  #film {
+  .film-btn {
     position: fixed;
     bottom: 1.1rem;
-    right: 1.3rem;
-    font-size: 1.1rem;
+    font-size: 1.7rem;
     line-height: 1;
-    color: rgba(255, 228, 195, 0.35);
+    color: rgba(255, 228, 195, 0.7);
     text-decoration: none;
     text-shadow: 0 1px 4px rgba(0,0,0,0.7);
-    transition: color 0.3s ease;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1.4s ease, color 0.3s ease;
     z-index: 3;
+    cursor: pointer;
     user-select: none;
   }
-  #film:hover { color: rgba(255, 240, 215, 0.95); }
+  .film-btn.show { opacity: 1; pointer-events: auto; }
+  .film-btn:hover { color: rgba(255, 240, 215, 1); }
+  #film-replay { right: 1.3rem; }
+  #film-home { left: 1.3rem; }
 </style>
 </head>
 <body>
 <canvas id="garden"></canvas>
-<a id="film" href="movie.html" aria-label="watch the film">&#9654;</a>
+<div id="film-replay" class="film-btn" role="button" aria-label="replay">&#8635;</div>
+<a id="film-home" class="film-btn" aria-label="interactive bouquet">&#128144;</a>
 
 <script>
 (function () {
@@ -67,7 +72,11 @@
   let nameHalfH = 60;
   let vignette = null;
   let nameSprite = null;
-  let animT = 0;
+  let animT = 0;      // world clock (slows during the slow-motion act)
+  let movieT = 0;     // real film clock
+  let heroVine = null;
+  let iconsShown = false;
+  const cam = { x: 0, y: 0, z: 1 };
 
   const mouse = { x: -9999, y: -9999, active: false };
   const vines = [];
@@ -130,17 +139,18 @@
     nameSprite = { canvas: c, w: lw, h: lh, ox: nx, oy: ny };
   }
 
-  function drawName(t) {
-    if (!nameSprite) return;
+  function drawName(t, alpha) {
+    if (!nameSprite || alpha <= 0) return;
     const s = nameSprite;
     const pulse = reducedMotion ? 0 : (Math.sin(t * 1.2) + 1) / 2;
-    const scale = 1 + pulse * 0.012;
+    const scale = (1 + pulse * 0.012) * (0.955 + 0.045 * alpha); // eases up as it reveals
     ctx.save();
     ctx.translate(CX, CY);
     ctx.scale(scale, scale);
+    ctx.globalAlpha = alpha;
     ctx.drawImage(s.canvas, -s.ox, -s.oy, s.w, s.h);
     if (pulse > 0) {
-      ctx.globalAlpha = pulse * 0.28;
+      ctx.globalAlpha = alpha * pulse * 0.28;
       ctx.globalCompositeOperation = "lighter";
       ctx.drawImage(s.canvas, -s.ox, -s.oy, s.w, s.h);
     }
@@ -726,12 +736,17 @@
     while (headAng < -Math.PI) headAng += TAU;
     headAng *= 0.45;
 
+    const delay = opts.delay !== undefined ? opts.delay : rand(0.2, 6.5);
+    // choreography: solve the growth speed so the tip lands on cue
+    const speed = opts.arrive !== undefined
+      ? clamp(L / Math.max(0.6, opts.arrive - delay), 40, 460)
+      : (opts.speed || rand(120, 200));
     return {
       fl, pts, L, leaves, headAng,
       progress: 0,
       cursor: {},
-      delay: opts.delay !== undefined ? opts.delay : rand(0.2, 6.5),
-      speed: (opts.speed || rand(120, 200)) * (reducedMotion ? 0 : 1),
+      delay,
+      speed: speed * (reducedMotion ? 0 : 1),
       arrived: false,
       arriveT: 0,
       front: opts.front,
@@ -741,11 +756,11 @@
     };
   }
 
-  // growth sweeps up and out from bottom-center, so the whole garden
-  // blooms as one choreographed wave instead of scattered pops
-  function sweepDelay(x, y) {
+  // film choreography: the mass bloom lands in world-seconds 17–22,
+  // sweeping outward from the center of the screen
+  function bloomCue(x, y) {
     const maxD = Math.hypot(Math.max(CX, W - CX), H);
-    return 5.2 * (Math.hypot(x - CX, y - H) / maxD) + rand(0, 1.1);
+    return 17 + 4.2 * (Math.hypot(x - CX, y - H) / maxD) + rand(0, 0.8);
   }
 
   function seedWreath() {
@@ -773,7 +788,8 @@
         ringAng: a,
         type,
         size,
-        delay: sweepDelay(p.x, p.y),
+        delay: rand(5, 8.5),
+        arrive: bloomCue(p.x, p.y),
         front: Math.sin(a) > -0.15, // top-arc blooms peek from behind the name
       }));
     }
@@ -804,10 +820,26 @@
         ax: p.x, ay: p.y,
         size,
         type: nextType(),
-        delay: sweepDelay(p.x, p.y),
+        delay: rand(5, 8.5),
+        arrive: bloomCue(p.x, p.y),
         front: Math.random() < 0.5,
       }));
     }
+
+    // the hero: a large marigold beside the name whose sprouting and
+    // bloom the camera follows in close-up
+    const heroP = clearAnchor(
+      clamp(CX - clearRadius * 1.7, W * 0.16, W * 0.42),
+      CY + rand(-24, 24), 42);
+    heroVine = makeVine({
+      ax: heroP.x, ay: heroP.y,
+      type: "marigold",
+      size: 42,
+      delay: 2.4,
+      arrive: 13.6, // bud + slow-motion unfurl land in the close-up act
+      front: true,
+    });
+    vines.push(heroVine);
 
     if (reducedMotion) {
       for (const v of vines) {
@@ -1258,12 +1290,16 @@
     ctx.fillRect(0, H * 0.88, W, H * 0.12);
   }
 
-  function drawHalo() {
+  function drawHalo(alpha) {
+    if (alpha <= 0) return;
     const glow = ctx.createRadialGradient(CX, CY, 0, CX, CY, clearRadius * 1.9);
     glow.addColorStop(0, "rgba(255,165,90,0.16)");
     glow.addColorStop(1, "rgba(255,165,90,0)");
+    ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, W, H);
+    ctx.restore();
   }
 
   function drawMotes(t) {
@@ -1286,6 +1322,47 @@
   }
 
   // ---------------------------------------------------------------
+  // Film timeline & camera
+  //   0–3 fade in · 3–8 follow the sprouting hero vine · 8–15 wide climb
+  //   15–21 slow-motion bloom close-up · 21–27 the garden opens
+  //   27–30 the name reveals · then a living hold with replay
+  // ---------------------------------------------------------------
+  function timeScaleNow() {
+    if (reducedMotion) return 1;
+    if (movieT >= 16 && movieT < 20.5) return 0.45; // slow-motion unfurl
+    return 1;
+  }
+
+  function nameAlphaNow() {
+    if (reducedMotion) return 1;
+    return smooth(clamp((movieT - 27) / 2.6, 0, 1));
+  }
+
+  function cameraGoal() {
+    if (reducedMotion || movieT >= 21 || !heroVine) return { x: CX, y: CY, z: 1 };
+    if (movieT < 3) {
+      return { x: heroVine.pts[0].x, y: H * 0.86, z: 1.7 };
+    }
+    if (movieT < 8) { // ride along with the growing tip
+      const tip = pointAtD(heroVine.pts, heroVine.progress, {});
+      return { x: tip.x, y: tip.y - 14, z: 2.1 };
+    }
+    if (movieT < 15) return { x: CX, y: CY + H * 0.05, z: 1.04 };
+    // push in on the hero bud for the bloom
+    const tip = heroVine.pts[heroVine.pts.length - 1];
+    return { x: tip.x, y: tip.y, z: 2.4 };
+  }
+
+  function updateCamera(dt) {
+    const g = cameraGoal();
+    const kp = 1 - Math.pow(0.16, dt);
+    const kz = 1 - Math.pow(0.30, dt);
+    cam.x += (g.x - cam.x) * kp;
+    cam.y += (g.y - cam.y) * kp;
+    cam.z += (g.z - cam.z) * kz;
+  }
+
+  // ---------------------------------------------------------------
   // Main loop
   // ---------------------------------------------------------------
   let last = performance.now();
@@ -1294,18 +1371,21 @@
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
     const t = now / 1000;
-    animT += dt;
+    movieT += dt;
+    const wdt = dt * timeScaleNow();
+    animT += wdt;
+    const nA = nameAlphaNow();
 
     drawBackground(dt);
 
-    updateGust(dt);
-    for (const v of vines) updateVine(v, dt);
+    updateGust(wdt);
+    for (const v of vines) updateVine(v, wdt);
 
     // settled blooms occasionally shed a petal (more in a gust)
-    if (!reducedMotion && driftPetals.length < 40) {
+    if (!reducedMotion && animT > 19 && driftPetals.length < 40) {
       for (const v of vines) {
         if (!v.arrived || v.fl.age < v.fl.bloomDur + 2) continue;
-        const chance = dt * (0.025 + Math.abs(gustAt(v.pts[v.pts.length - 1].x)) * 0.8);
+        const chance = wdt * (0.025 + Math.abs(gustAt(v.pts[v.pts.length - 1].x)) * 0.8);
         if (Math.random() < chance) {
           const tip = v.pts[v.pts.length - 1];
           spawnBloomPetal(tip.x, tip.y, v.fl.petalHue);
@@ -1313,24 +1393,34 @@
       }
     }
 
+    updateCamera(dt);
+
+    // ---- everything below lives in the camera's world ----
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(cam.z, cam.z);
+    ctx.translate(-cam.x, -cam.y);
+
     // behind the name: back vines first, then drifting blossoms sunk in haze
     for (const v of vines) if (!v.front) drawVine(v, t);
-    drawTumblers(dt, t);
-    drawHalo();
-    drawName(t);
+    if (animT > 21) drawTumblers(wdt, t);
+    drawHalo(nA);
+    drawName(t, nA);
     for (const v of vines) if (v.front) drawVine(v, t);
 
-    for (const b of butterflies) {
-      updateButterfly(b, dt, t);
-      drawButterfly(b, t);
+    if (animT > 19.5) {
+      for (const b of butterflies) {
+        updateButterfly(b, wdt, t);
+        drawButterfly(b, t);
+      }
     }
 
-    // floating hearts
-    if (!reducedMotion && Math.random() < dt * 0.9 && hearts.length < 14) spawnHeart();
+    // floating hearts (once the garden has opened)
+    if (!reducedMotion && animT > 24 && Math.random() < wdt * 0.9 && hearts.length < 14) spawnHeart();
     for (let i = hearts.length - 1; i >= 0; i--) {
       const hh = hearts[i];
-      hh.y -= hh.vy * dt;
-      hh.x += Math.sin(t * 1.1 + hh.sway) * 14 * dt;
+      hh.y -= hh.vy * wdt;
+      hh.x += Math.sin(t * 1.1 + hh.sway) * 14 * wdt;
       const fade = clamp((hh.y - H * 0.18) / (H * 0.25), 0, 1);
       if (hh.y < H * 0.12) { hearts.splice(i, 1); continue; }
       ctx.save();
@@ -1347,13 +1437,13 @@
       ctx.restore();
     }
 
-    // falling petals
-    if (!reducedMotion && Math.random() < dt * 1.6 && driftPetals.length < 30) spawnDriftPetal();
+    // falling petals (once blooms exist to shed them)
+    if (!reducedMotion && animT > 19 && Math.random() < wdt * 1.2 && driftPetals.length < 30) spawnDriftPetal();
     for (let i = driftPetals.length - 1; i >= 0; i--) {
       const p = driftPetals[i];
-      p.x += (p.vx + Math.sin(t + p.rot) * 8) * dt;
-      p.y += p.vy * dt;
-      p.rot += p.rotV * dt;
+      p.x += (p.vx + Math.sin(t + p.rot) * 8) * wdt;
+      p.y += p.vy * wdt;
+      p.rot += p.rotV * wdt;
       if (p.y > H + 30) { driftPetals.splice(i, 1); continue; }
       ctx.save();
       ctx.translate(p.x, p.y);
@@ -1374,56 +1464,43 @@
 
     drawMotes(t);
 
-    // cursor sparkles
-    for (let i = sparkles.length - 1; i >= 0; i--) {
-      const s = sparkles[i];
-      s.life -= s.decay * dt;
-      if (s.life <= 0) { sparkles.splice(i, 1); continue; }
-      s.x += s.vx * dt;
-      s.y += s.vy * dt;
-      ctx.globalAlpha = s.life;
-      ctx.fillStyle = "#ffe3c8";
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, s.size * s.life, 0, TAU);
-      ctx.fill();
-      ctx.globalAlpha = 1;
+    ctx.restore();
+    // ---- back to screen space ----
+
+    // cinematic letterbox: bars slide in for the film, out for the hold
+    if (!reducedMotion) {
+      const bar = H * 0.085 * smooth(clamp(movieT / 1.4, 0, 1)) *
+        (1 - smooth(clamp((movieT - 30.5) / 1.8, 0, 1)));
+      if (bar > 0.5) {
+        ctx.fillStyle = "#050208";
+        ctx.fillRect(0, 0, W, bar);
+        ctx.fillRect(0, H - bar, W, bar);
+      }
+      // fade in from black
+      const fade = 1 - smooth(clamp(movieT / 2.4, 0, 1));
+      if (fade > 0) {
+        ctx.fillStyle = `rgba(3,1,5,${fade})`;
+        ctx.fillRect(0, 0, W, H);
+      }
     }
 
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, W, H);
 
+    if (!iconsShown && movieT > 31) {
+      iconsShown = true;
+      document.getElementById("film-replay").classList.add("show");
+      document.getElementById("film-home").classList.add("show");
+    }
+
     requestAnimationFrame(frame);
   }
 
   // ---------------------------------------------------------------
-  // Interaction
+  // Controls: replay, and back to the interactive bouquet
   // ---------------------------------------------------------------
-  function pointerMove(x, y) {
-    mouse.x = x;
-    mouse.y = y;
-    mouse.active = true;
-    if (!reducedMotion && Math.random() < 0.5) spawnSparkle(x, y);
-  }
-
-  function plantVine(x, y) {
-    if (vines.length > 80) return; // the garden is full
-    const size = rand(20, 34);
-    const p = clearAnchor(x, y, size); // never bloom over the name
-    vines.push(makeVine({ ax: p.x, ay: p.y, size, delay: animT, speed: 300, front: true }));
-    for (let i = 0; i < 8; i++) spawnSparkle(x, y);
-  }
-
-  window.addEventListener("mousemove", (e) => pointerMove(e.clientX, e.clientY));
-  window.addEventListener("mouseleave", () => { mouse.active = false; });
-  window.addEventListener("click", (e) => plantVine(e.clientX, e.clientY));
-  window.addEventListener("touchmove", (e) => {
-    const t0 = e.touches[0];
-    if (t0) pointerMove(t0.clientX, t0.clientY);
-  }, { passive: true });
-  window.addEventListener("touchstart", (e) => {
-    const t0 = e.touches[0];
-    if (t0) plantVine(t0.clientX, t0.clientY);
-  }, { passive: true });
+  document.getElementById("film-replay").addEventListener("click", () => location.reload());
+  document.getElementById("film-home").href = "./" + location.search;
   window.addEventListener("resize", resize);
 
   // ---------------------------------------------------------------
@@ -1432,7 +1509,12 @@
   resize();
   seedMotes();
   seedButterflies();
-  document.getElementById("film").href = "movie.html" + location.search;
+  // drifting extras enter from the wings rather than popping mid-frame
+  for (const tb of tumblers) tb.x = Math.random() < 0.5 ? -tb.fl.size * 2 : W + tb.fl.size * 2;
+  for (const b of butterflies) { b.x = Math.random() < 0.5 ? -40 : W + 40; b.y = rand(H * 0.15, H * 0.5); }
+  if (reducedMotion) movieT = 40; // skip straight to the settled garden
+  const g0 = cameraGoal();
+  cam.x = g0.x; cam.y = g0.y; cam.z = g0.z;
   requestAnimationFrame(frame);
 })();
 </script>
