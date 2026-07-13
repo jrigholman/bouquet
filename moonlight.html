@@ -135,120 +135,179 @@ float fbm(vec2 p) {
 
 vec3 rayDir(vec2 ndc) {
   float aspect = uRes.x / uRes.y;
-  return normalize(vec3(ndc.x * aspect * 0.9, (ndc.y + 0.28) * 0.9, -1.9));
+  return normalize(vec3(ndc.x * aspect * 0.9, (ndc.y + 0.28) * 0.9, -2.0));
 }
 
 vec3 moonDir() {
-  float el = mix(-0.10, 0.40, uMoon);
-  float az = -0.55;
+  float el = mix(-0.10, 0.42, uMoon);
+  float az = -0.50;
   return normalize(vec3(sin(az) * cos(el), sin(el), -cos(az) * cos(el)));
 }
 
-float ridge(float az) { // sleeping hills on the far shore
-  return 0.010 + 0.016 * sin(az * 2.1 + 1.7) + 0.010 * sin(az * 4.7 + 0.6) + 0.005 * sin(az * 9.3);
+// ---- the lake: classic choppy sea octaves, tuned down to calm ----
+const mat2 OCT = mat2(1.6, 1.2, -1.2, 1.6);
+
+float seaOctave(vec2 uv, float choppy) {
+  uv += noise(uv);
+  vec2 wv = 1.0 - abs(sin(uv));
+  vec2 swv = abs(cos(uv));
+  wv = mix(wv, swv, wv);
+  return pow(1.0 - pow(wv.x * wv.y, 0.65), choppy);
 }
 
-vec3 skyColor(vec3 rd, float stars) {
-  float y = max(rd.y, -0.05);
-  vec3 col = mix(vec3(0.150, 0.095, 0.230), vec3(0.045, 0.030, 0.105), smoothstep(0.0, 0.55, y));
-  col += vec3(0.13, 0.055, 0.09) * exp(-abs(rd.y) * 12.0);   // dusk warmth at the horizon
-  col += vec3(0.10, 0.045, 0.075) * exp(-abs(rd.y) * 3.0) * 0.5;
-
-  vec3 md = moonDir();
-  float d = max(dot(rd, md), 0.0);
-  float lum = 0.35 + 0.65 * uMoon;
-  col += vec3(0.95, 0.85, 0.66) * pow(d, 220.0) * 0.35 * lum;
-  col += vec3(0.70, 0.58, 0.52) * pow(d, 9.0) * 0.15 * lum;
-
-  // moon disc with a hint of maria — kept brighter than its halo
-  float ang = acos(clamp(dot(rd, md), -1.0, 1.0));
-  float disc = 1.0 - smoothstep(0.0285, 0.0308, ang);
-  if (disc > 0.0) {
-    float shade = 0.90 + 0.10 * (1.0 - smoothstep(0.0, 0.03, ang));
-    float cr = fbm(rd.xy * 55.0 + 13.1);
-    vec3 mcol = vec3(1.06, 1.02, 0.90) * shade * (0.92 + 0.08 * cr) * (0.55 + 0.45 * uMoon);
-    col = mix(col, mcol, disc);
+float seaHeight(vec2 p) {
+  float freq = 0.30, amp = 0.42, choppy = 3.2;
+  vec2 uv = p;
+  uv.x *= 0.75;
+  float h = 0.0;
+  for (int i = 0; i < 4; i++) {
+    float d = seaOctave((uv + uT * 0.55) * freq, choppy);
+    d += seaOctave((uv - uT * 0.45) * freq, choppy);
+    h += d * amp;
+    uv = OCT * uv;
+    freq *= 1.9;
+    amp *= 0.22;
+    choppy = mix(choppy, 1.0, 0.2);
   }
+  return h * 0.55;
+}
 
-  // stars
-  if (rd.y > 0.02 && stars > 0.0) {
-    vec2 sc = vec2(atan(rd.x, -rd.z) * 2.6, rd.y * 5.0);
-    vec2 cell = floor(sc * 34.0);
-    float h = hash(cell);
-    if (h > 0.915) {
-      vec2 f = fract(sc * 34.0) - 0.5;
-      float tw = 0.45 + 0.55 * sin(uT * (0.8 + h * 3.0) + h * 40.0);
-      float star = smoothstep(0.30, 0.0, length(f)) * tw;
-      col += vec3(0.85, 0.88, 1.0) * star * (h - 0.915) * 10.0 * stars;
+vec3 seaNormal(vec2 p, float t) {
+  float eps = 0.02 + t * 0.004;   // farther water samples wider
+  float h = seaHeight(p);
+  return normalize(vec3(
+    h - seaHeight(p + vec2(eps, 0.0)),
+    eps * (1.1 + t * 0.05),       // and flattens with distance
+    h - seaHeight(p + vec2(0.0, eps))
+  ));
+}
+
+// ---- the night sky ----
+vec3 skyBase(vec3 rd) {
+  float y = max(rd.y, 0.0);
+  vec3 col = mix(vec3(0.088, 0.062, 0.150), vec3(0.030, 0.024, 0.070), 1.0 - exp(-y * 2.6));
+  col += vec3(0.155, 0.085, 0.105) * exp(-y * 7.5);   // warm haze at the horizon
+  return col;
+}
+
+vec3 skyColor(vec3 rd, float starAmt) {
+  vec3 col = skyBase(rd);
+  vec3 md = moonDir();
+  float lum = 0.30 + 0.70 * uMoon;
+  float d = max(dot(rd, md), 0.0);
+
+  // atmospheric glow: a tight forward lobe and a broad wash
+  col += vec3(0.92, 0.83, 0.66) * pow(d, 180.0) * 0.30 * lum;
+  col += vec3(0.62, 0.52, 0.47) * pow(d, 10.0) * 0.16 * lum;
+
+  // a faint light pillar standing in the low haze under the moon
+  float azd = atan(rd.x, -rd.z) - atan(md.x, -md.z);
+  col += vec3(0.85, 0.72, 0.55) * exp(-azd * azd * 90.0) * exp(-max(rd.y, 0.0) * 10.0) * 0.10 * uMoon;
+
+  // stars: a faint field with a few bright ones, warm and cool
+  float cmask = 0.0;
+  if (rd.y > 0.015 && starAmt > 0.0) {
+    vec2 sc = vec2(atan(rd.x, -rd.z) * 2.6, rd.y * 5.0) * 42.0;
+    vec2 cell = floor(sc);
+    vec2 f = fract(sc) - 0.5;
+    float h1 = hash(cell);
+    if (h1 > 0.88) {
+      float mag = pow((h1 - 0.88) / 0.12, 3.0);
+      float tw = 0.55 + 0.45 * sin(uT * (0.6 + h1 * 3.0) + h1 * 40.0);
+      float star = smoothstep(0.20, 0.02, length(f)) * mag * tw;
+      vec3 stint = mix(vec3(0.75, 0.82, 1.0), vec3(1.0, 0.90, 0.72), hash(cell + 7.7));
+      col += stint * star * 1.6 * starAmt;
     }
   }
 
-  // a breath of high cloud
-  float cl = fbm(vec2(rd.x * 2.6 + uT * 0.006, rd.y * 5.5 + 3.0));
-  col += vec3(0.32, 0.26, 0.40) * 0.045 * smoothstep(0.55, 0.85, cl) * smoothstep(0.0, 0.2, rd.y);
+  // cloud wisps on the dome, lit from the moon's side
+  float hproj = 1.0 / (rd.y + 0.18);
+  vec2 cuv = rd.xz * hproj * 0.55 + vec2(uT * 0.005, 0.0);
+  float cl = fbm(cuv * 1.4) * 0.6 + fbm(cuv * 3.4 + 4.7) * 0.4;
+  cmask = smoothstep(0.52, 0.80, cl) * smoothstep(0.0, 0.16, rd.y) * 0.55;
+  vec3 ccol = mix(vec3(0.055, 0.045, 0.095), vec3(0.38, 0.34, 0.36), (0.15 + 0.85 * pow(d, 4.0)) * lum);
+  col = mix(col, ccol, cmask);
 
-  // the name's golden light, and the bloom's warmth
+  // the moon: limb darkening and maria, always brighter than its halo
+  float ang = acos(clamp(dot(rd, md), -1.0, 1.0));
+  float aR = 0.0285;
+  float disc = 1.0 - smoothstep(aR * 0.97, aR * 1.03, ang);
+  if (disc > 0.0) {
+    float q = clamp(ang / aR, 0.0, 1.0);
+    float limb = sqrt(max(0.0, 1.0 - q * q)) * 0.35 + 0.65;
+    vec2 muv = vec2(atan(rd.x, -rd.z), rd.y) * 34.0;
+    float maria = fbm(muv + fbm(muv * 1.7) * 1.4);
+    float mar = smoothstep(0.45, 0.72, maria) * 0.28;
+    vec3 mcol = vec3(1.12, 1.07, 0.95) * limb * (1.0 - mar) * (0.5 + 0.5 * uMoon);
+    col = mix(col, mcol, disc * (1.0 - cmask * 0.5));
+  }
+
+  // the name's golden light and the bloom's warmth live in this sky
   vec3 nd = rayDir(uNameNdc);
   float dn = max(dot(rd, nd), 0.0);
   col += vec3(1.00, 0.76, 0.38) * pow(dn, 700.0) * 1.0 * uName;
-  col += vec3(1.00, 0.72, 0.36) * pow(dn, 60.0) * 0.22 * uName;
+  col += vec3(1.00, 0.72, 0.36) * pow(dn, 60.0) * 0.20 * uName;
   vec3 fd = rayDir(uFlowerNdc);
   float df = max(dot(rd, fd), 0.0);
-  col += vec3(1.00, 0.55, 0.18) * pow(df, 500.0) * 0.5 * uFlower;
-  col += vec3(1.00, 0.55, 0.20) * pow(df, 70.0) * 0.10 * uFlower;
+  col += vec3(1.00, 0.55, 0.18) * pow(df, 500.0) * 0.45 * uFlower;
+  col += vec3(1.00, 0.55, 0.20) * pow(df, 70.0) * 0.09 * uFlower;
 
-  // hills occlude the sky just above the waterline
+  // two ridges of hills, fading into the haze
   if (rd.y >= 0.0) {
     float az = atan(rd.x, -rd.z);
-    float h2 = ridge(az);
-    float hill = 1.0 - smoothstep(h2 - 0.004, h2 + 0.004, rd.y);
-    vec3 hillCol = vec3(0.075, 0.045, 0.125) + vec3(0.05, 0.02, 0.04) * exp(-abs(rd.y) * 30.0);
-    col = mix(col, hillCol, hill);
+    float hA = 0.014 + 0.018 * sin(az * 1.9 + 1.7) + 0.011 * sin(az * 4.3 + 0.6) + 0.005 * sin(az * 9.3);
+    float hillA = 1.0 - smoothstep(hA - 0.0035, hA + 0.0035, rd.y);
+    vec3 colA = mix(vec3(0.055, 0.038, 0.098), skyBase(rd) * 1.15, 0.45);
+    col = mix(col, colA, hillA);
+    float hB = 0.006 + 0.010 * sin(az * 2.7 + 4.1) + 0.006 * sin(az * 6.1 + 2.2);
+    float hillB = 1.0 - smoothstep(hB - 0.003, hB + 0.003, rd.y);
+    col = mix(col, vec3(0.038, 0.026, 0.070), hillB);
   }
   return col;
 }
 
 void main() {
   vec2 uv = gl_FragCoord.xy / uRes;
-  vec2 ndc = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);
+  vec2 ndc = uv * 2.0 - 1.0;
   vec3 rd = rayDir(ndc);
-  vec3 ro = vec3(0.0, 1.5, 0.0);
+  vec3 ro = vec3(0.0, 1.6, 0.0);
+  vec3 md = moonDir();
+  float lum = 0.30 + 0.70 * uMoon;
   vec3 col;
 
   if (rd.y < -0.003) {
-    // cast the ray onto the lake
+    // cast onto the lake, shade with fresnel + reflected sky
     float t = ro.y / -rd.y;
     vec3 pos = ro + rd * t;
-    float att = exp(-t * 0.015);
-    vec2 p = pos.xz * 0.30 + vec2(0.0, uT * 0.10);
-    float e = 0.08;
-    float h0 = fbm(p);
-    float hx = fbm(p + vec2(e, 0.0));
-    float hz = fbm(p + vec2(0.0, e));
-    // finer chop layered on the swell
-    vec2 p2 = pos.xz * 1.3 + vec2(uT * 0.22, -uT * 0.13);
-    float g0 = fbm(p2);
-    float gx = fbm(p2 + vec2(e, 0.0));
-    float gz = fbm(p2 + vec2(0.0, e));
-    vec3 n = normalize(vec3(
-      ((h0 - hx) * 0.55 + (g0 - gx) * 0.22) / e * att,
-      1.0,
-      ((h0 - hz) * 0.55 + (g0 - gz) * 0.22) / e * att
-    ));
+    vec3 n = seaNormal(pos.xz * 0.9, t);
     vec3 rr = reflect(rd, n);
-    rr.y = abs(rr.y) + 0.015;
+    rr.y = abs(rr.y) + 0.012;
     rr = normalize(rr);
-    vec3 refl = skyColor(rr, 0.35);
-    float fres = 0.05 + 0.95 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);
-    vec3 deep = vec3(0.040, 0.026, 0.080);
-    col = mix(deep, refl, clamp(fres * 1.8, 0.0, 1.0));
-    float fog = smoothstep(24.0, 130.0, t);
-    col = mix(col, vec3(0.135, 0.085, 0.180), fog * 0.75);
+    vec3 refl = skyColor(rr, 0.30) * 0.88;
+    float fres = 0.02 + 0.98 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);
+    vec3 deep = vec3(0.016, 0.020, 0.038);
+    col = mix(deep, refl, clamp(fres * 1.35, 0.0, 1.0));
+
+    // the moonlight pillar: specular whose roughness grows with distance
+    vec3 hv = normalize(md - rd);
+    float shin = mix(750.0, 90.0, clamp(t / 90.0, 0.0, 1.0));
+    float spec = pow(max(dot(n, hv), 0.0), shin);
+    col += vec3(1.0, 0.90, 0.70) * spec * 0.85 * lum;
+    // sparkle glints riding the pillar
+    float glit = smoothstep(0.965, 1.0, noise(pos.xz * 6.0 + vec2(uT * 1.7, -uT * 1.2)));
+    col += vec3(1.0, 0.93, 0.75) * glit * spec * 8.0 * lum;
+
+    float fog = 1.0 - exp(-t * 0.016);
+    col = mix(col, skyBase(vec3(rd.x, 0.001, rd.z)) * 1.05, fog * 0.85);
   } else {
     col = skyColor(rd, 1.0);
   }
 
-  col = pow(col, vec3(0.92)); // gentle lift
+  // filmic finish: exposure rides the moonrise, ACES, fine dither
+  col *= 1.05 + 0.55 * uMoon;
+  col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+  col = pow(col, vec3(0.96));
+  col += (hash(gl_FragCoord.xy + fract(uT) * 61.7) - 0.5) / 150.0;
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -820,8 +879,8 @@ void main() {
     fxCanvas.style.width = W + "px";
     fxCanvas.style.height = H + "px";
     // the ray-traced background reads perfectly at reduced resolution
-    skyCanvas.width = Math.ceil(W * DPR * 0.55);
-    skyCanvas.height = Math.ceil(H * DPR * 0.55);
+    skyCanvas.width = Math.ceil(W * DPR * 0.65);
+    skyCanvas.height = Math.ceil(H * DPR * 0.65);
     skyCanvas.style.width = W + "px";
     skyCanvas.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
