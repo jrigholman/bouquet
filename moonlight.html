@@ -145,6 +145,9 @@ uniform vec2 uFlowerNdc;
 uniform vec3 uFlowerPos;  // the marigold head, as real geometry
 uniform float uFlowerR;
 uniform float uBloom;
+uniform vec3 uStemA;      // stem base on the bank
+uniform vec3 uStemB;      // stem bend control
+uniform float uStemProg;  // how far the stem has grown
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 p) {
@@ -203,6 +206,42 @@ vec3 flowerNormal(vec3 p) {
     flowerSDF(p + vec3(e, 0, 0)) - flowerSDF(p - vec3(e, 0, 0)),
     flowerSDF(p + vec3(0, e, 0)) - flowerSDF(p - vec3(0, e, 0)),
     flowerSDF(p + vec3(0, 0, e)) - flowerSDF(p - vec3(0, 0, e))));
+}
+
+// the stem: a tapered tube along a quadratic curve whose tip is welded
+// to the base of the bud, so bloom and stem grow as one plant
+vec3 stemEnd() {
+  float R0 = uFlowerR * (0.30 + 0.70 * uBloom);
+  return uFlowerPos - vec3(-0.10, 0.80, 0.0) * R0;
+}
+
+float stemSDF(vec3 p) {
+  vec3 E = stemEnd();
+  float dmin = 1e9;
+  vec3 prev = uStemA;
+  for (int i = 1; i <= 6; i++) {
+    float ss = float(i) / 6.0 * uStemProg;
+    vec3 q = mix(mix(uStemA, uStemB, ss), mix(uStemB, E, ss), ss);
+    vec3 pa = p - prev, ba = q - prev;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    dmin = min(dmin, length(pa - ba * h));
+    prev = q;
+  }
+  return dmin - uFlowerR * 0.048;
+}
+
+float plantSDF(vec3 p) {
+  float d = stemSDF(p);
+  if (uBloom > 0.02) d = min(d, flowerSDF(p));
+  return d;
+}
+
+vec3 plantNormal(vec3 p) {
+  float e = uFlowerR * 0.012;
+  return normalize(vec3(
+    plantSDF(p + vec3(e, 0, 0)) - plantSDF(p - vec3(e, 0, 0)),
+    plantSDF(p + vec3(0, e, 0)) - plantSDF(p - vec3(0, e, 0)),
+    plantSDF(p + vec3(0, 0, e)) - plantSDF(p - vec3(0, 0, e))));
 }
 
 vec2 sphereHit(vec3 ro, vec3 rd, vec3 c, float R) {
@@ -406,22 +445,40 @@ void main() {
   float lum = 0.30 + 0.70 * uMoon;
   vec3 col;
 
-  // the marigold first: real geometry in the same light as the water
+  // the plant first: flower and stem as one piece of real geometry
   bool hitFlower = false;
-  if (uBloom > 0.03) {
-    vec2 bs = sphereHit(ro, rd, uFlowerPos, uFlowerR * 1.05);
+  if (uStemProg > 0.02) {
+    vec3 bc = (uStemA + uFlowerPos) * 0.5;
+    float br = length(uFlowerPos - uStemA) * 0.62 + uFlowerR * 1.3;
+    vec2 bs = sphereHit(ro, rd, bc, br);
     if (bs.y > 0.0) {
       float tf = max(bs.x, 0.0);
-      for (int i = 0; i < 40; i++) {
+      for (int i = 0; i < 56; i++) {
         vec3 p = ro + rd * tf;
-        float d = flowerSDF(p);
+        float d = plantSDF(p);
         if (d < uFlowerR * 0.004) { hitFlower = true; break; }
-        tf += max(d, uFlowerR * 0.002);
+        tf += max(d * 0.9, uFlowerR * 0.0015);
         if (tf > bs.y) break;
       }
       if (hitFlower) {
         vec3 p = ro + rd * tf;
-        vec3 N = flowerNormal(p);
+        vec3 N = plantNormal(p);
+        if (stemSDF(p) < flowerSDF(p) || uBloom <= 0.02) {
+          // green stem: cylinder shading with a moonlit rim
+          float hF = clamp((p.y - uStemA.y) / max(uFlowerPos.y - uStemA.y, 0.1), 0.0, 1.0);
+          vec3 alb = mix(vec3(0.045, 0.105, 0.045), vec3(0.10, 0.23, 0.09), hF);
+          float diff = max(dot(N, md), 0.0);
+          float rim = pow(1.0 - max(dot(N, -rd), 0.0), 2.5) * max(dot(N, md) * 0.5 + 0.5, 0.0);
+          vec3 moonCol = vec3(1.0, 0.93, 0.80) * lum;
+          col = alb * (vec3(0.22, 0.18, 0.30) * 0.6 + moonCol * diff * 1.1)
+              + vec3(0.75, 0.95, 0.75) * rim * 0.16 * lum;
+          col *= 1.05 + 0.55 * uMoon;
+          col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+          col = pow(col, vec3(0.96));
+          col += (hash(gl_FragCoord.xy + fract(uT) * 61.7) - 0.5) / 150.0;
+          gl_FragColor = vec4(col, 1.0);
+          return;
+        }
         vec3 nq = normalize(p - uFlowerPos);
         float fld = petalField(nq);
         float occ = clamp(0.45 + 0.55 * fld, 0.0, 1.0);
@@ -521,7 +578,7 @@ void main() {
     const loc = gl.getAttribLocation(glProg, "aPos");
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    for (const u of ["uRes", "uT", "uMoon", "uName", "uNameNdc", "uFlower", "uFlowerNdc", "uFlowerPos", "uFlowerR", "uBloom"]) {
+    for (const u of ["uRes", "uT", "uMoon", "uName", "uNameNdc", "uFlower", "uFlowerNdc", "uFlowerPos", "uFlowerR", "uBloom", "uStemA", "uStemB", "uStemProg"]) {
       glUniforms[u] = gl.getUniformLocation(glProg, u);
     }
     return true;
@@ -554,6 +611,11 @@ void main() {
     gl.uniform3f(glUniforms.uFlowerPos, fw[0], fw[1], fw[2]);
     gl.uniform1f(glUniforms.uFlowerR, 7.0 * 0.9 * flower.size / H);
     gl.uniform1f(glUniforms.uBloom, bloomAmount());
+    const sa = worldFromScreen(W * 0.885, H * 0.955, 7.0);
+    const sb = worldFromScreen(W * 0.84, H * 0.64, 7.0);
+    gl.uniform3f(glUniforms.uStemA, sa[0], sa[1], sa[2]);
+    gl.uniform3f(glUniforms.uStemB, sb[0], sb[1], sb[2]);
+    gl.uniform1f(glUniforms.uStemProg, stemProgress());
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -1090,12 +1152,26 @@ void main() {
       : { x: HEADX + flower.size * 0.16, y: HEADY + flower.size * 0.42 };
     stemPts = [];
     const N = 60;
-    for (let i = 0; i <= N; i++) {
-      const u = i / N, v = 1 - u;
-      stemPts.push({
-        x: v * v * v * P0.x + 3 * v * v * u * P1.x + 3 * v * u * u * P2.x + u * u * u * P3.x,
-        y: v * v * v * P0.y + 3 * v * v * u * P1.y + 3 * v * u * u * P2.y + u * u * u * P3.y,
-      });
+    if (gl) {
+      // mirror the shader's quadratic stem so the leaves sit on the 3D tube
+      const A = { x: W * 0.885, y: H * 0.955 };
+      const B = { x: W * 0.84, y: H * 0.64 };
+      const E = { x: HEADX + flower.size * 0.10, y: HEADY + flower.size * 0.72 };
+      for (let i = 0; i <= N; i++) {
+        const u = i / N, v = 1 - u;
+        stemPts.push({
+          x: v * v * A.x + 2 * v * u * B.x + u * u * E.x,
+          y: v * v * A.y + 2 * v * u * B.y + u * u * E.y,
+        });
+      }
+    } else {
+      for (let i = 0; i <= N; i++) {
+        const u = i / N, v = 1 - u;
+        stemPts.push({
+          x: v * v * v * P0.x + 3 * v * v * u * P1.x + 3 * v * u * u * P2.x + u * u * u * P3.x,
+          y: v * v * v * P0.y + 3 * v * v * u * P1.y + 3 * v * u * u * P2.y + u * u * u * P3.y,
+        });
+      }
     }
     stemLen = 0;
     stemPts[0].d = 0;
@@ -1146,26 +1222,28 @@ void main() {
     const endD = prog * stemLen;
     const sway = reducedMotion ? 0 : Math.sin(t * 0.5) * 2.5;
     const lw = Math.max(3, flower.size * 0.09);
-    ctx.lineCap = "round";
-    ctx.strokeStyle = "#1c3423";
-    ctx.lineWidth = lw;
-    ctx.beginPath();
-    ctx.moveTo(stemPts[0].x, stemPts[0].y);
-    let i = 1;
-    for (; i < stemPts.length && stemPts[i].d <= endD; i++) {
-      const f = stemPts[i].d / stemLen;
-      ctx.lineTo(stemPts[i].x + sway * f, stemPts[i].y);
+    if (!gl) {
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#1c3423";
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.moveTo(stemPts[0].x, stemPts[0].y);
+      let i = 1;
+      for (; i < stemPts.length && stemPts[i].d <= endD; i++) {
+        const f = stemPts[i].d / stemLen;
+        ctx.lineTo(stemPts[i].x + sway * f, stemPts[i].y);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(190,230,200,0.30)";
+      ctx.lineWidth = lw * 0.28;
+      ctx.beginPath();
+      ctx.moveTo(stemPts[0].x - lw * 0.28, stemPts[0].y);
+      for (let j = 1; j < i; j++) {
+        const f = stemPts[j].d / stemLen;
+        ctx.lineTo(stemPts[j].x - lw * 0.28 + sway * f, stemPts[j].y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(190,230,200,0.30)";
-    ctx.lineWidth = lw * 0.28;
-    ctx.beginPath();
-    ctx.moveTo(stemPts[0].x - lw * 0.28, stemPts[0].y);
-    for (let j = 1; j < i; j++) {
-      const f = stemPts[j].d / stemLen;
-      ctx.lineTo(stemPts[j].x - lw * 0.28 + sway * f, stemPts[j].y);
-    }
-    ctx.stroke();
 
     const leafSway = reducedMotion ? 0 : Math.sin(t * 0.8) * 0.05;
     for (const lf of leaves) {
@@ -1174,9 +1252,9 @@ void main() {
       drawLeafShape(lf.x + sway * lf.u, lf.y, lf.ang, lf.len * grow, leafSway * lf.side);
     }
 
-    if (prog > 0.97) {
-      const bx = HEADX + flower.size * (gl ? 0.22 : 0.16) + sway;
-      const by = HEADY + flower.size * (gl ? 0.82 : 0.40);
+    if (prog > 0.97 && !gl) {
+      const bx = HEADX + flower.size * 0.16 + sway;
+      const by = HEADY + flower.size * 0.40;
       ctx.fillStyle = "#234427";
       for (const a of [-0.55, -0.1, 0.4]) {
         ctx.save();
