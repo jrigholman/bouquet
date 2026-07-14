@@ -130,7 +130,11 @@ void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 `;
 
   const FSRC = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
+#else
+precision mediump float;
+#endif
 uniform vec2 uRes;
 uniform float uT;
 uniform float uMoon;      // 0 below the hills .. 1 fully risen
@@ -164,8 +168,6 @@ vec3 moonDir() {
 }
 
 // ---- the lake: classic choppy sea octaves, tuned down to calm ----
-const mat2 OCT = mat2(1.6, 1.2, -1.2, 1.6);
-
 float seaOctave(vec2 uv, float choppy) {
   uv += noise(uv);
   vec2 wv = 1.0 - abs(sin(uv));
@@ -183,7 +185,7 @@ float seaHeight(vec2 p) {
     float d = seaOctave((uv + uT * 0.55) * freq, choppy);
     d += seaOctave((uv - uT * 0.45) * freq, choppy);
     h += d * amp;
-    uv = OCT * uv;
+    uv = mat2(1.6, 1.2, -1.2, 1.6) * uv;
     freq *= 1.9;
     amp *= 0.22;
     choppy = mix(choppy, 1.0, 0.2);
@@ -198,14 +200,14 @@ float seaHeightCheap(vec2 p) { // 2 octaves — used only while marching
   float h = 0.0;
   for (int i = 0; i < 2; i++) {
     h += seaOctave((uv + uT * 0.55) * freq, choppy) * amp;
-    uv = OCT * uv;
+    uv = mat2(1.6, 1.2, -1.2, 1.6) * uv;
     freq *= 1.9;
     amp *= 0.22;
   }
   return h * 0.55;
 }
 
-const float WAVE_AMP = 0.34;
+#define WAVE_AMP 0.34
 float mapWater(vec3 p) { return p.y - seaHeightCheap(p.xz * 0.9) * WAVE_AMP; }
 
 // heightmap tracing: march the ray against the wave field so near
@@ -395,13 +397,15 @@ void main() {
 `;
 
   function initGL() {
-    gl = skyCanvas.getContext("webgl", { antialias: false, depth: false, alpha: false });
+    const opts = { antialias: false, depth: false, alpha: false };
+    gl = skyCanvas.getContext("webgl", opts) || skyCanvas.getContext("experimental-webgl", opts);
     if (!gl) return false;
     function sh(type, src) {
       const s = gl.createShader(type);
       gl.shaderSource(s, src);
       gl.compileShader(s);
       if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.warn("moonlight shader:", gl.getShaderInfoLog(s));
         gl = null;
         return null;
       }
@@ -415,7 +419,11 @@ void main() {
     gl.attachShader(glProg, vs);
     gl.attachShader(glProg, fs);
     gl.linkProgram(glProg);
-    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) { gl = null; return false; }
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
+      console.warn("moonlight shader link:", gl.getProgramInfoLog(glProg));
+      gl = null;
+      return false;
+    }
     gl.useProgram(glProg);
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -445,31 +453,160 @@ void main() {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  // 2D fallback background if WebGL is unavailable
-  function drawFallbackBackground(t) {
+  // Painted fallback for devices without WebGL — same scene, same film,
+  // rendered with gradients instead of rays
+  const fbStars = [], fbClouds = [], fbGlints = [];
+
+  function seedFallback() {
+    fbStars.length = 0;
+    const n = Math.round((W * H) / 9000);
+    for (let i = 0; i < n; i++) {
+      fbStars.push({
+        x: rand(0, W), y: rand(0, WL * 0.96),
+        r: rand(0.4, 1.7), tw: rand(0.4, 2.2), ph: rand(0, TAU),
+        warm: Math.random() < 0.2,
+      });
+    }
+    fbClouds.length = 0;
+    for (let i = 0; i < 3; i++) {
+      fbClouds.push({
+        x: rand(0, W), y: rand(H * 0.06, H * 0.4),
+        w: rand(W * 0.25, W * 0.45), h: rand(30, 60),
+        v: rand(2, 6) * (Math.random() < 0.5 ? -1 : 1),
+        a: rand(0.03, 0.06),
+      });
+    }
+    fbGlints.length = 0;
+    for (let i = 0; i < 46; i++) {
+      fbGlints.push({
+        y: rand(WL + 6, H - 8),
+        ph: rand(0, TAU), sp: rand(0.6, 1.8),
+        len: rand(6, 26),
+      });
+    }
+  }
+
+  function drawFallbackBackground(dt, t) {
     const rise = moonRise();
     let g = ctx.createLinearGradient(0, 0, 0, WL);
     g.addColorStop(0, "#130c2b");
-    g.addColorStop(0.85, "#3a2050");
+    g.addColorStop(0.55, "#241543");
+    g.addColorStop(0.88, "#3a2050");
     g.addColorStop(1, "#4b2a56");
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-    const mx = W * 0.15, my = H * (0.55 - 0.38 * rise);
-    const mr = clamp(Math.min(W, H) * 0.06, 24, 58);
-    g = ctx.createRadialGradient(mx, my, 0, mx, my, mr * 4);
-    g.addColorStop(0, "rgba(250,240,215,0.3)");
-    g.addColorStop(1, "rgba(250,240,215,0)");
+    ctx.fillRect(0, 0, W, WL);
+
+    for (const s of fbStars) {
+      const a = (0.25 + 0.75 * Math.pow((Math.sin(t * s.tw + s.ph) + 1) / 2, 2)) * (0.5 + 0.5 * rise);
+      ctx.fillStyle = s.warm ? `rgba(255,226,180,${a * 0.9})` : `rgba(235,240,255,${a * 0.8})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, TAU);
+      ctx.fill();
+    }
+
+    for (const c of fbClouds) {
+      c.x += c.v * dt * (reducedMotion ? 0 : 1);
+      if (c.x < -c.w) c.x = W + c.w * 0.5;
+      if (c.x > W + c.w) c.x = -c.w * 0.5;
+      const g2 = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.w / 2);
+      g2.addColorStop(0, `rgba(200,170,220,${c.a})`);
+      g2.addColorStop(1, "rgba(200,170,220,0)");
+      ctx.fillStyle = g2;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.scale(1, c.h / (c.w / 2));
+      ctx.translate(-c.x, -c.y);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.w / 2, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // the moon rises out of the hills, reddened low, silver high
+    const mx = W * 0.14;
+    const my = WL + H * 0.02 - (H * 0.44) * rise;
+    const mr = clamp(Math.min(W, H) * 0.062, 24, 58);
+    const warm = 1 - rise;
+    g = ctx.createRadialGradient(mx, my, 0, mx, my, mr * 4.2);
+    g.addColorStop(0, `rgba(250,240,215,${0.14 + 0.18 * rise})`);
+    g.addColorStop(0.35, "rgba(240,220,200,0.10)");
+    g.addColorStop(1, "rgba(240,220,200,0)");
     ctx.fillStyle = g;
-    ctx.fillRect(mx - mr * 4, my - mr * 4, mr * 8, mr * 8);
-    ctx.fillStyle = "#f5edd8";
+    ctx.fillRect(mx - mr * 4.2, my - mr * 4.2, mr * 8.4, mr * 8.4);
+    g = ctx.createRadialGradient(mx - mr * 0.3, my - mr * 0.3, mr * 0.1, mx, my, mr);
+    g.addColorStop(0, `rgb(${251 - warm * 6},${246 - warm * 60},${230 - warm * 110})`);
+    g.addColorStop(0.85, `rgb(${239 - warm * 8},${226 - warm * 66},${200 - warm * 100})`);
+    g.addColorStop(1, `rgb(${226 - warm * 10},${208 - warm * 62},${178 - warm * 90})`);
+    ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(mx, my, mr, 0, TAU);
     ctx.fill();
+    ctx.fillStyle = "rgba(190,170,150,0.25)";
+    for (const [dx, dy, r] of [[-0.3, 0.1, 0.16], [0.25, -0.22, 0.11], [0.1, 0.32, 0.09], [-0.05, -0.1, 0.07]]) {
+      ctx.beginPath();
+      ctx.arc(mx + dx * mr, my + dy * mr, r * mr, 0, TAU);
+      ctx.fill();
+    }
+
+    // hills over the moonrise, then the water
+    ctx.fillStyle = "#251536";
+    ctx.beginPath();
+    ctx.moveTo(0, WL);
+    ctx.quadraticCurveTo(W * 0.12, WL - H * 0.055, W * 0.28, WL - H * 0.012);
+    ctx.quadraticCurveTo(W * 0.42, WL + 2, W * 0.58, WL - H * 0.03);
+    ctx.quadraticCurveTo(W * 0.72, WL - H * 0.055, W, WL - H * 0.008);
+    ctx.lineTo(W, WL);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#1c0f2b";
+    ctx.beginPath();
+    ctx.moveTo(0, WL);
+    ctx.quadraticCurveTo(W * 0.10, WL - H * 0.028, W * 0.24, WL - H * 0.004);
+    ctx.quadraticCurveTo(W * 0.5, WL + 4, W * 0.8, WL - H * 0.014);
+    ctx.quadraticCurveTo(W * 0.92, WL - H * 0.02, W, WL - H * 0.002);
+    ctx.lineTo(W, WL);
+    ctx.closePath();
+    ctx.fill();
+
     g = ctx.createLinearGradient(0, WL, 0, H);
     g.addColorStop(0, "#3d2450");
+    g.addColorStop(0.25, "#291940");
     g.addColorStop(1, "#120b24");
     ctx.fillStyle = g;
     ctx.fillRect(0, WL, W, H - WL);
+    ctx.fillStyle = "rgba(255,220,190,0.12)";
+    ctx.fillRect(0, WL, W, 1.5);
+
+    // moon glitter path
+    for (const gl2 of fbGlints) {
+      const depth = (gl2.y - WL) / (H - WL);
+      const spread = 14 + depth * mr * 2.6;
+      const a = (0.10 + 0.5 * Math.pow((Math.sin(t * gl2.sp + gl2.ph) + 1) / 2, 3)) * (1 - depth * 0.55) * rise;
+      const wob = Math.sin(t * 0.9 + gl2.ph * 3) * spread * 0.4;
+      ctx.strokeStyle = `rgba(250,235,205,${a})`;
+      ctx.lineWidth = 1.1 + depth;
+      ctx.beginPath();
+      ctx.moveTo(mx + wob - gl2.len / 2, gl2.y);
+      ctx.lineTo(mx + wob + gl2.len / 2, gl2.y);
+      ctx.stroke();
+    }
+
+    // warm shimmer where the name and the bloom light the water
+    const nA = nameAlpha();
+    if (nA > 0) {
+      g = ctx.createRadialGradient(NX, WL + 30, 0, NX, WL + 30, W * 0.2);
+      g.addColorStop(0, `rgba(255,190,110,${0.10 * nA})`);
+      g.addColorStop(1, "rgba(255,190,110,0)");
+      ctx.save();
+      ctx.translate(NX, WL + 30);
+      ctx.scale(1, 0.35);
+      ctx.translate(-NX, -(WL + 30));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(NX, WL + 30, W * 0.2, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   // ---------------------------------------------------------------
@@ -1148,6 +1285,7 @@ void main() {
     renderName();
     buildStem();
     seedBank();
+    seedFallback();
     grainPattern = ctx.createPattern(grainTex, "repeat");
 
     fireflies.length = 0;
@@ -1178,7 +1316,7 @@ void main() {
       drawShaderBackground(t);
       ctx.clearRect(0, 0, W, H);
     } else {
-      drawFallbackBackground(t);
+      drawFallbackBackground(dt, t);
     }
 
     updateShootingStar(dt);
