@@ -142,6 +142,9 @@ uniform float uName;      // the name's light
 uniform vec2 uNameNdc;
 uniform float uFlower;    // warm light of the bloom
 uniform vec2 uFlowerNdc;
+uniform vec3 uFlowerPos;  // the marigold head, as real geometry
+uniform float uFlowerR;
+uniform float uBloom;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 p) {
@@ -165,6 +168,50 @@ vec3 moonDir() {
   float el = mix(-0.10, 0.42, uMoon);
   float az = -0.50;
   return normalize(vec3(sin(az) * cos(el), sin(el), -cos(az) * cos(el)));
+}
+
+// ---- the marigold: a ray-marched bloom of ringed, creased petals ----
+vec3 flowerAxis() { return normalize(vec3(-0.28, 0.30, 0.92)); }
+
+float petalField(vec3 n) {
+  vec3 A = flowerAxis();
+  float ang = acos(clamp(dot(n, A), -1.0, 1.0));
+  vec3 u = normalize(cross(A, vec3(0.0, 1.0, 0.0)));
+  vec3 v = cross(A, u);
+  float az = atan(dot(n, v), dot(n, u));
+  float ring = ang * 6.4 + 0.35;      // concentric petal rows
+  float row = floor(ring);
+  float fr = fract(ring);
+  float az2 = az * 1.90986 + row * 0.5; // twelve petals a row, rows offset
+  float c = abs(fract(az2) - 0.5) * 2.0; // 0 petal centre .. 1 crease
+  float cup = sin(fr * 3.14159);
+  return cup * (1.0 - 0.32 * c * c) - 0.35 * pow(c, 6.0) * cup;
+}
+
+float flowerSDF(vec3 p) {
+  vec3 q = p - uFlowerPos;
+  q += flowerAxis() * dot(q, flowerAxis()) * 0.22; // a gently flattened bloom, not a ball
+  float r = length(q);
+  vec3 n = q / max(r, 1e-5);
+  float R = uFlowerR * (0.30 + 0.70 * uBloom);
+  return (r - R * (0.84 + 0.16 * petalField(n))) * 0.6;
+}
+
+vec3 flowerNormal(vec3 p) {
+  float e = uFlowerR * 0.015;
+  return normalize(vec3(
+    flowerSDF(p + vec3(e, 0, 0)) - flowerSDF(p - vec3(e, 0, 0)),
+    flowerSDF(p + vec3(0, e, 0)) - flowerSDF(p - vec3(0, e, 0)),
+    flowerSDF(p + vec3(0, 0, e)) - flowerSDF(p - vec3(0, 0, e))));
+}
+
+vec2 sphereHit(vec3 ro, vec3 rd, vec3 c, float R) {
+  vec3 oc = ro - c;
+  float b = dot(oc, rd);
+  float h = b * b - (dot(oc, oc) - R * R);
+  if (h < 0.0) return vec2(-1.0);
+  h = sqrt(h);
+  return vec2(-b - h, -b + h);
 }
 
 // ---- the lake: classic choppy sea octaves, tuned down to calm ----
@@ -359,7 +406,50 @@ void main() {
   float lum = 0.30 + 0.70 * uMoon;
   vec3 col;
 
-  if (rd.y < -0.004) {
+  // the marigold first: real geometry in the same light as the water
+  bool hitFlower = false;
+  if (uBloom > 0.03) {
+    vec2 bs = sphereHit(ro, rd, uFlowerPos, uFlowerR * 1.05);
+    if (bs.y > 0.0) {
+      float tf = max(bs.x, 0.0);
+      for (int i = 0; i < 40; i++) {
+        vec3 p = ro + rd * tf;
+        float d = flowerSDF(p);
+        if (d < uFlowerR * 0.004) { hitFlower = true; break; }
+        tf += max(d, uFlowerR * 0.002);
+        if (tf > bs.y) break;
+      }
+      if (hitFlower) {
+        vec3 p = ro + rd * tf;
+        vec3 N = flowerNormal(p);
+        vec3 nq = normalize(p - uFlowerPos);
+        float fld = petalField(nq);
+        float occ = clamp(0.45 + 0.55 * fld, 0.0, 1.0);
+        float ang = acos(clamp(dot(nq, flowerAxis()), -1.0, 1.0));
+        vec3 albedo = mix(vec3(0.70, 0.20, 0.03), vec3(1.30, 0.66, 0.12), clamp(fld, 0.0, 1.0));
+        albedo = mix(albedo, vec3(1.35, 0.85, 0.22), smoothstep(0.9, 1.6, ang) * 0.5);
+        albedo = mix(vec3(0.15, 0.30, 0.08), albedo, smoothstep(0.12, 0.5, uBloom)); // green as a bud
+        if (ang < 0.22) { // the floret eye
+          float sp = noise(nq.xy * 90.0);
+          albedo = mix(vec3(0.45, 0.14, 0.03), vec3(1.0, 0.55, 0.10), smoothstep(0.55, 0.95, sp));
+          occ = 0.9;
+        }
+        float diff = max(dot(N, md), 0.0);
+        float back = pow(max(dot(rd, md), 0.0), 2.0) * (1.0 - occ) * 0.9; // petal translucency
+        float spec = pow(max(dot(reflect(rd, N), md), 0.0), 28.0) * 0.30;
+        vec3 skyAmb = vec3(0.26, 0.20, 0.34);
+        vec3 moonCol = vec3(1.0, 0.93, 0.80) * lum;
+        col = albedo * (skyAmb * (0.45 + 0.25 * N.y) + moonCol * diff * 1.15 + vec3(1.0, 0.55, 0.25) * back)
+            + moonCol * spec;
+        // the name's gold kisses the near petals
+        vec3 npos = vec3(0.0, 1.6, 0.0) + rayDir(uNameNdc) * 12.0;
+        col += vec3(1.0, 0.72, 0.35) * max(dot(N, normalize(npos - p)), 0.0) * 0.30 * uName;
+        col *= (0.62 + 0.38 * occ);
+      }
+    }
+  }
+
+  if (!hitFlower) if (rd.y < -0.004) {
     // march the ray against the wave field — real crests, real parallax
     float t = traceWater(ro, rd);
     vec3 pos = ro + rd * t;
@@ -431,13 +521,22 @@ void main() {
     const loc = gl.getAttribLocation(glProg, "aPos");
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    for (const u of ["uRes", "uT", "uMoon", "uName", "uNameNdc", "uFlower", "uFlowerNdc"]) {
+    for (const u of ["uRes", "uT", "uMoon", "uName", "uNameNdc", "uFlower", "uFlowerNdc", "uFlowerPos", "uFlowerR", "uBloom"]) {
       glUniforms[u] = gl.getUniformLocation(glProg, u);
     }
     return true;
   }
 
   const ndcOf = (x, y) => [(x / W) * 2 - 1, 1 - (y / H) * 2];
+
+  // invert the shader camera: the world point that projects to (x, y)
+  function worldFromScreen(x, y, dist) {
+    const dx = ((x / W) * 2 - 1) * (W / H) * 0.9;
+    const dy = ((1 - (y / H) * 2) + 0.28) * 0.9;
+    const dz = -2.0;
+    const L = Math.hypot(dx, dy, dz);
+    return [dx / L * dist, 1.6 + dy / L * dist, dz / L * dist];
+  }
 
   function drawShaderBackground(t) {
     gl.viewport(0, 0, skyCanvas.width, skyCanvas.height);
@@ -450,6 +549,11 @@ void main() {
     gl.uniform1f(glUniforms.uFlower, bloomAmount() * 0.8);
     const fn = ndcOf(HEADX, HEADY);
     gl.uniform2f(glUniforms.uFlowerNdc, fn[0], fn[1]);
+    const sway = reducedMotion ? 0 : Math.sin(t * 0.5) * 2.5;
+    const fw = worldFromScreen(HEADX + sway, HEADY, 7.0);
+    gl.uniform3f(glUniforms.uFlowerPos, fw[0], fw[1], fw[2]);
+    gl.uniform1f(glUniforms.uFlowerR, 7.0 * 0.9 * flower.size / H);
+    gl.uniform1f(glUniforms.uBloom, bloomAmount());
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -980,7 +1084,10 @@ void main() {
     const P0 = { x: W * 0.885, y: H * 0.925 };
     const P1 = { x: W * 0.92, y: H * 0.80 };
     const P2 = { x: W * 0.72, y: H * 0.68 };
-    const P3 = { x: HEADX + flower.size * 0.16, y: HEADY + flower.size * 0.42 };
+    const glHead = !!gl;
+    const P3 = glHead
+      ? { x: HEADX + flower.size * 0.22, y: HEADY + flower.size * 0.84 }
+      : { x: HEADX + flower.size * 0.16, y: HEADY + flower.size * 0.42 };
     stemPts = [];
     const N = 60;
     for (let i = 0; i <= N; i++) {
@@ -1068,7 +1175,8 @@ void main() {
     }
 
     if (prog > 0.97) {
-      const bx = HEADX + flower.size * 0.16 + sway, by = HEADY + flower.size * 0.40;
+      const bx = HEADX + flower.size * (gl ? 0.22 : 0.16) + sway;
+      const by = HEADY + flower.size * (gl ? 0.82 : 0.40);
       ctx.fillStyle = "#234427";
       for (const a of [-0.55, -0.1, 0.4]) {
         ctx.save();
@@ -1328,7 +1436,7 @@ void main() {
     drawBank(t);
     drawGrass(t, false);
     drawStem(t);
-    drawHead(t);
+    if (!gl) drawHead(t);
     drawGrass(t, true);
     drawCattails(t);
     updateAirPetals(dt, t);
@@ -1410,8 +1518,8 @@ void main() {
   // ---------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------
-  resize();
   initGL();
+  resize();
   requestAnimationFrame(frame);
 })();
 </script>
