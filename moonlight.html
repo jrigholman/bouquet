@@ -81,9 +81,28 @@
   const ripples = [];
   const fireflies = [];
   const leaves = [];
+  const grassBlades = [];
+  const cattails = [];
+  const mists = [];
   let shootingStar = null;
   let nextShooting = 9;
   let nextShed = 20;
+
+  // fine monochrome noise, reused for petal texture and film grain
+  const grainTex = (() => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 96;
+    const g = c.getContext("2d");
+    const img = g.createImageData(96, 96);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 128 + ((Math.random() * 90 - 45) | 0);
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  })();
+  let grainPattern = null;
 
   // ---------------------------------------------------------------
   // Film timeline (~30s)
@@ -172,12 +191,48 @@ float seaHeight(vec2 p) {
   return h * 0.55;
 }
 
+float seaHeightCheap(vec2 p) { // 2 octaves — used only while marching
+  float freq = 0.30, amp = 0.42, choppy = 3.2;
+  vec2 uv = p;
+  uv.x *= 0.75;
+  float h = 0.0;
+  for (int i = 0; i < 2; i++) {
+    h += seaOctave((uv + uT * 0.55) * freq, choppy) * amp;
+    uv = OCT * uv;
+    freq *= 1.9;
+    amp *= 0.22;
+  }
+  return h * 0.55;
+}
+
+const float WAVE_AMP = 0.34;
+float mapWater(vec3 p) { return p.y - seaHeightCheap(p.xz * 0.9) * WAVE_AMP; }
+
+// heightmap tracing: march the ray against the wave field so near
+// waves have real crests and parallax, not a flat plane
+float traceWater(vec3 ro, vec3 rd) {
+  float tm = 0.0;
+  float tx = min(ro.y / max(-rd.y, 0.004) * 3.0, 400.0);
+  float hx = mapWater(ro + rd * tx);
+  if (hx > 0.0) return tx;
+  float hm = mapWater(ro);
+  float tmid = tx;
+  for (int i = 0; i < 8; i++) {
+    tmid = mix(tm, tx, hm / (hm - hx));
+    vec3 p = ro + rd * tmid;
+    float hmid = mapWater(p);
+    if (hmid < 0.0) { tx = tmid; hx = hmid; }
+    else { tm = tmid; hm = hmid; }
+  }
+  return tmid;
+}
+
 vec3 seaNormal(vec2 p, float t) {
-  float eps = 0.02 + t * 0.004;   // farther water samples wider
+  float eps = 0.012 + t * 0.005;  // farther water samples wider
   float h = seaHeight(p);
   return normalize(vec3(
     h - seaHeight(p + vec2(eps, 0.0)),
-    eps * (1.1 + t * 0.05),       // and flattens with distance
+    eps * (0.9 + t * 0.05) / WAVE_AMP * 0.55, // and flattens with distance
     h - seaHeight(p + vec2(0.0, eps))
   ));
 }
@@ -204,19 +259,40 @@ vec3 skyColor(vec3 rd, float starAmt) {
   float azd = atan(rd.x, -rd.z) - atan(md.x, -md.z);
   col += vec3(0.85, 0.72, 0.55) * exp(-azd * azd * 90.0) * exp(-max(rd.y, 0.0) * 10.0) * 0.10 * uMoon;
 
-  // stars: a faint field with a few bright ones, warm and cool
+  // the Milky Way: a tilted band of glow, dust lanes, and dense dim stars
   float cmask = 0.0;
+  vec2 gae = vec2(atan(rd.x, -rd.z), rd.y);
+  if (rd.y > 0.02 && starAmt > 0.0) {
+    float band = gae.y - (0.46 + 0.20 * gae.x);
+    float bw = exp(-band * band * 16.0);
+    if (bw > 0.01) {
+      float dens = fbm(vec2(gae.x * 3.2, band * 9.0) + 3.7);
+      float dust = fbm(vec2(gae.x * 5.5, band * 16.0) + 9.1);
+      vec3 mw = (vec3(0.13, 0.12, 0.17) * dens + vec3(0.05, 0.045, 0.07))
+        * (1.0 - smoothstep(0.42, 0.72, dust) * 0.8);
+      col += mw * bw * 0.85 * starAmt;
+      float ms = hash(floor(vec2(gae.x, gae.y) * 420.0));
+      col += vec3(0.75, 0.78, 0.92) * step(0.992, ms) * bw * 0.22 * starAmt;
+    }
+  }
+
+  // stars: a faint field, a few bright ones with diffraction spikes
   if (rd.y > 0.015 && starAmt > 0.0) {
-    vec2 sc = vec2(atan(rd.x, -rd.z) * 2.6, rd.y * 5.0) * 42.0;
+    vec2 sc = vec2(gae.x * 2.6, gae.y * 5.0) * 42.0;
     vec2 cell = floor(sc);
     vec2 f = fract(sc) - 0.5;
     float h1 = hash(cell);
-    if (h1 > 0.88) {
-      float mag = pow((h1 - 0.88) / 0.12, 3.0);
+    if (h1 > 0.905) {
+      float mag = pow((h1 - 0.905) / 0.095, 3.0);
       float tw = 0.55 + 0.45 * sin(uT * (0.6 + h1 * 3.0) + h1 * 40.0);
       float star = smoothstep(0.20, 0.02, length(f)) * mag * tw;
       vec3 stint = mix(vec3(0.75, 0.82, 1.0), vec3(1.0, 0.90, 0.72), hash(cell + 7.7));
       col += stint * star * 1.6 * starAmt;
+      if (h1 > 0.986) { // the brightest catch a four-point cross
+        float spikes = (exp(-abs(f.x) * 26.0) + exp(-abs(f.y) * 26.0))
+          * exp(-length(f) * 5.0) * mag * tw;
+        col += stint * spikes * 0.8 * starAmt;
+      }
     }
   }
 
@@ -228,17 +304,23 @@ vec3 skyColor(vec3 rd, float starAmt) {
   vec3 ccol = mix(vec3(0.055, 0.045, 0.095), vec3(0.38, 0.34, 0.36), (0.15 + 0.85 * pow(d, 4.0)) * lum);
   col = mix(col, ccol, cmask);
 
-  // the moon: limb darkening and maria, always brighter than its halo
+  // the moon: limb darkening, two-scale maria, bright crater flecks,
+  // and atmospheric reddening while it sits low over the hills
   float ang = acos(clamp(dot(rd, md), -1.0, 1.0));
-  float aR = 0.0285;
+  float aR = 0.031;
   float disc = 1.0 - smoothstep(aR * 0.97, aR * 1.03, ang);
   if (disc > 0.0) {
     float q = clamp(ang / aR, 0.0, 1.0);
-    float limb = sqrt(max(0.0, 1.0 - q * q)) * 0.35 + 0.65;
-    vec2 muv = vec2(atan(rd.x, -rd.z), rd.y) * 34.0;
-    float maria = fbm(muv + fbm(muv * 1.7) * 1.4);
-    float mar = smoothstep(0.45, 0.72, maria) * 0.28;
-    vec3 mcol = vec3(1.12, 1.07, 0.95) * limb * (1.0 - mar) * (0.5 + 0.5 * uMoon);
+    float limb = sqrt(max(0.0, 1.0 - q * q)) * 0.38 + 0.62;
+    vec2 muv = vec2(gae.x, gae.y) * 30.0;
+    float m1 = fbm(muv + fbm(muv * 1.7) * 1.5);
+    float m2 = fbm(muv * 2.8 + 4.3);
+    float mar = smoothstep(0.44, 0.70, m1) * 0.26 + smoothstep(0.55, 0.80, m2) * 0.10;
+    float fleck = smoothstep(0.90, 0.99, noise(muv * 3.4 + 8.8)) * 0.18; // young craters
+    vec3 mcol = vec3(1.12, 1.07, 0.95) * limb * (1.0 - mar) + vec3(fleck);
+    float lowRed = exp(-max(md.y, 0.0) * 7.0); // reddened near the horizon
+    mcol *= mix(vec3(1.0), vec3(1.0, 0.62, 0.42), lowRed * 0.75);
+    mcol *= (0.55 + 0.45 * uMoon);
     col = mix(col, mcol, disc * (1.0 - cmask * 0.5));
   }
 
@@ -275,27 +357,27 @@ void main() {
   float lum = 0.30 + 0.70 * uMoon;
   vec3 col;
 
-  if (rd.y < -0.003) {
-    // cast onto the lake, shade with fresnel + reflected sky
-    float t = ro.y / -rd.y;
+  if (rd.y < -0.004) {
+    // march the ray against the wave field — real crests, real parallax
+    float t = traceWater(ro, rd);
     vec3 pos = ro + rd * t;
     vec3 n = seaNormal(pos.xz * 0.9, t);
     vec3 rr = reflect(rd, n);
     rr.y = abs(rr.y) + 0.012;
     rr = normalize(rr);
-    vec3 refl = skyColor(rr, 0.30) * 0.88;
+    vec3 refl = skyColor(rr, 0.12) * 0.88;
     float fres = 0.02 + 0.98 * pow(1.0 - max(dot(-rd, n), 0.0), 5.0);
     vec3 deep = vec3(0.016, 0.020, 0.038);
     col = mix(deep, refl, clamp(fres * 1.35, 0.0, 1.0));
 
     // the moonlight pillar: specular whose roughness grows with distance
     vec3 hv = normalize(md - rd);
-    float shin = mix(750.0, 90.0, clamp(t / 90.0, 0.0, 1.0));
+    float shin = mix(750.0, 150.0, clamp(t / 90.0, 0.0, 1.0));
     float spec = pow(max(dot(n, hv), 0.0), shin);
-    col += vec3(1.0, 0.90, 0.70) * spec * 0.85 * lum;
+    col += vec3(1.0, 0.90, 0.70) * spec * 0.60 * lum;
     // sparkle glints riding the pillar
     float glit = smoothstep(0.965, 1.0, noise(pos.xz * 6.0 + vec2(uT * 1.7, -uT * 1.2)));
-    col += vec3(1.0, 0.93, 0.75) * glit * spec * 8.0 * lum;
+    col += vec3(1.0, 0.93, 0.75) * glit * spec * 4.5 * lum;
 
     float fog = 1.0 - exp(-t * 0.016);
     col = mix(col, skyBase(vec3(rd.x, 0.001, rd.z)) * 1.05, fog * 0.85);
@@ -463,9 +545,9 @@ void main() {
   function makeSprite(size) {
     const logical = size * 2.6;
     const c = document.createElement("canvas");
-    c.width = c.height = Math.max(8, Math.ceil(logical * 2));
+    c.width = c.height = Math.max(8, Math.ceil(logical * 3)); // crisp close-up
     const g = c.getContext("2d");
-    g.scale(2, 2);
+    g.scale(3, 3);
     g.translate(logical / 2, logical / 2);
     return { canvas: c, logical, g };
   }
@@ -482,11 +564,11 @@ void main() {
       g.shadowColor = "rgba(40,10,30,0.55)";
       g.shadowBlur = R * 0.16;
       g.shadowOffsetY = R * 0.10;
-      const count = Math.max(9, Math.round(15 - li * 1.4));
+      const count = Math.max(11, Math.round(18 - li * 1.6));
       for (let i = 0; i < count; i++) {
         const a = (i / count) * TAU + li * 0.42 + rand(-0.05, 0.05);
         const L = R * rand(0.92, 1.08);
-        const w = R * 0.34 * rand(0.88, 1.1);
+        const w = R * 0.32 * rand(0.88, 1.1);
         const jh = rand(-2.5, 2.5), jl = rand(-4, 4);
         g.save();
         g.rotate(a);
@@ -498,21 +580,34 @@ void main() {
         g.fillStyle = grad;
         g.fill();
         g.strokeStyle = hsl(h + 18, 95, 74, 0.3);
-        g.lineWidth = 0.9;
+        g.lineWidth = 0.8;
         g.stroke();
+        // satin sheen across the petal's belly
+        g.clip();
+        const shg = g.createLinearGradient(0, -w, L * 0.9, w);
+        shg.addColorStop(0.35, "rgba(255,240,210,0)");
+        shg.addColorStop(0.55, "rgba(255,240,210,0.15)");
+        shg.addColorStop(0.75, "rgba(255,240,210,0)");
+        g.fillStyle = shg;
+        g.fillRect(0, -w * 1.2, L * 1.1, w * 2.4);
         g.restore();
       }
       g.save();
       g.globalCompositeOperation = "source-atop";
+      // moonlit side: warm backlit translucency; far side falls to shadow
       let sg = g.createRadialGradient(-R * 0.55, -R * 0.35, 0, -R * 0.55, -R * 0.35, R * 1.8);
-      sg.addColorStop(0, "rgba(255,250,230,0.22)");
-      sg.addColorStop(1, "rgba(255,250,230,0)");
+      sg.addColorStop(0, "rgba(255,236,196,0.28)");
+      sg.addColorStop(1, "rgba(255,236,196,0)");
       g.fillStyle = sg;
       g.fillRect(-R * 1.3, -R * 1.3, R * 2.6, R * 2.6);
       sg = g.createRadialGradient(R * 0.6, R * 0.45, 0, R * 0.6, R * 0.45, R * 1.7);
-      sg.addColorStop(0, "rgba(25,5,35,0.26)");
+      sg.addColorStop(0, "rgba(25,5,35,0.28)");
       sg.addColorStop(1, "rgba(25,5,35,0)");
       g.fillStyle = sg;
+      g.fillRect(-R * 1.3, -R * 1.3, R * 2.6, R * 2.6);
+      // fine petal grain
+      g.globalAlpha = 0.07;
+      g.fillStyle = g.createPattern(grainTex, "repeat");
       g.fillRect(-R * 1.3, -R * 1.3, R * 2.6, R * 2.6);
       g.restore();
       layers.push(sp);
@@ -580,15 +675,173 @@ void main() {
       ctx.drawImage(c.canvas, -c.logical / 2, -c.logical / 2, c.logical, c.logical);
       ctx.restore();
     }
+    // moonlight halation on the petals' moonward edge
+    const rim = bloom * moonRise();
+    if (rim > 0.1) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      const rg = ctx.createRadialGradient(
+        -flower.size * 0.55, -flower.size * 0.42, flower.size * 0.05,
+        -flower.size * 0.30, -flower.size * 0.20, flower.size * 1.2);
+      rg.addColorStop(0, `rgba(255,228,180,${0.12 * rim})`);
+      rg.addColorStop(0.5, `rgba(255,220,170,${0.05 * rim})`);
+      rg.addColorStop(1, "rgba(255,220,170,0)");
+      ctx.fillStyle = rg;
+      ctx.fillRect(-flower.size * 1.3, -flower.size * 1.3, flower.size * 2.6, flower.size * 2.6);
+      ctx.restore();
+    }
     ctx.restore();
   }
 
   // ---------------------------------------------------------------
   // Stem, leaves, calyx
   // ---------------------------------------------------------------
+  // the bank the marigold grows from, rising in the bottom-right corner
+  function bankTopAt(x) {
+    const u = clamp((x - W * 0.55) / (W * 0.45), 0, 1);
+    return H * (1.0 - 0.15 * smooth(u)) - 7 * Math.sin(u * 5.2) - 4 * Math.sin(u * 11.7);
+  }
+
+  function seedBank() {
+    grassBlades.length = 0;
+    for (let i = 0; i < 20; i++) {
+      const u = i / 19;
+      const bx = W * (0.585 + 0.39 * u) + rand(-12, 12);
+      grassBlades.push({
+        x: bx,
+        y: bankTopAt(bx) + rand(-2, 5),
+        h: rand(26, 82) * (0.75 + 0.45 * Math.abs(Math.sin(u * 4.2 + 1))),
+        lean: rand(-0.38, -0.05),
+        ph: rand(0, TAU),
+        w: rand(1.3, 2.6),
+        front: Math.random() < 0.45,
+      });
+    }
+    cattails.length = 0;
+    for (const ux of [0.905, 0.958]) {
+      const bx = W * ux + rand(-6, 6);
+      cattails.push({
+        x: bx, y: bankTopAt(bx),
+        h: rand(0.16, 0.21) * H,
+        ph: rand(0, TAU),
+        headH: rand(22, 34),
+      });
+    }
+    mists.length = 0;
+    for (let i = 0; i < 3; i++) {
+      mists.push({
+        x: rand(0, W),
+        y: WL + 5 + i * 11 + rand(-2, 2),
+        w: rand(0.4, 0.75) * W,
+        h: rand(7, 13),
+        v: rand(2.5, 6.5) * (Math.random() < 0.5 ? -1 : 1),
+        a: rand(0.035, 0.06),
+        ph: rand(0, TAU),
+      });
+    }
+  }
+
+  function drawBank(t) {
+    ctx.fillStyle = "#0b0714";
+    ctx.beginPath();
+    ctx.moveTo(W * 0.55, H + 4);
+    for (let x = W * 0.55; x <= W + 26; x += 22) ctx.lineTo(x, bankTopAt(x));
+    ctx.lineTo(W + 4, H + 4);
+    ctx.closePath();
+    ctx.fill();
+    // the crest catches a thread of moonlight
+    ctx.strokeStyle = "rgba(205,195,225,0.10)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let first = true;
+    for (let x = W * 0.55; x <= W + 26; x += 22) {
+      const y = bankTopAt(x);
+      first ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      first = false;
+    }
+    ctx.stroke();
+  }
+
+  function drawBlade(b, t) {
+    const sway = reducedMotion ? 0 : Math.sin(t * 0.9 + b.ph) * 0.06;
+    const lean = b.lean + sway;
+    const tipx = b.x + Math.sin(lean) * b.h * 1.15;
+    const tipy = b.y - Math.cos(lean) * b.h;
+    const cx = b.x + Math.sin(lean * 0.4) * b.h * 0.3;
+    const cy = b.y - b.h * 0.55;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#101c12";
+    ctx.lineWidth = b.w;
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.quadraticCurveTo(cx, cy, tipx, tipy);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(190,220,190,0.16)"; // moonlit edge
+    ctx.lineWidth = b.w * 0.4;
+    ctx.beginPath();
+    ctx.moveTo(b.x - 1, b.y);
+    ctx.quadraticCurveTo(cx - 1, cy, tipx - 1, tipy);
+    ctx.stroke();
+  }
+
+  function drawGrass(t, front) {
+    for (const b of grassBlades) {
+      if (b.front !== front) continue;
+      drawBlade(b, t);
+    }
+  }
+
+  function drawCattails(t) {
+    for (const c of cattails) {
+      const sway = reducedMotion ? 0 : Math.sin(t * 0.7 + c.ph) * 5;
+      const topx = c.x + sway, topy = c.y - c.h;
+      ctx.strokeStyle = "#131e13";
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.quadraticCurveTo(c.x + sway * 0.4, c.y - c.h * 0.55, topx, topy);
+      ctx.stroke();
+      const grad = ctx.createLinearGradient(topx - 5, 0, topx + 5, 0);
+      grad.addColorStop(0, "#3a2414");
+      grad.addColorStop(0.45, "#241608");
+      grad.addColorStop(1, "#160d05");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(topx, topy + c.headH * 0.4, 5, c.headH * 0.5, sway * 0.004, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(220,205,190,0.14)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(topx, topy + c.headH * 0.4, 5, c.headH * 0.5, sway * 0.004, -2.4, -0.8);
+      ctx.stroke();
+    }
+  }
+
+  function drawMist(dt, t) {
+    for (const m of mists) {
+      m.x += m.v * dt * (reducedMotion ? 0 : 1);
+      if (m.x < -m.w) m.x = W + m.w * 0.5;
+      if (m.x > W + m.w) m.x = -m.w * 0.5;
+      const bob = reducedMotion ? 0 : Math.sin(t * 0.3 + m.ph) * 1.5;
+      const g = ctx.createRadialGradient(m.x, m.y + bob, 0, m.x, m.y + bob, m.w / 2);
+      g.addColorStop(0, `rgba(205,190,225,${m.a * moonRise()})`);
+      g.addColorStop(1, "rgba(205,190,225,0)");
+      ctx.save();
+      ctx.translate(m.x, m.y + bob);
+      ctx.scale(1, m.h / (m.w / 2));
+      ctx.translate(-m.x, -(m.y + bob));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y + bob, m.w / 2, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   function buildStem() {
-    const P0 = { x: W * 0.94, y: H + 40 };
-    const P1 = { x: W * 0.96, y: H * 0.80 };
+    const P0 = { x: W * 0.885, y: H * 0.925 };
+    const P1 = { x: W * 0.92, y: H * 0.80 };
     const P2 = { x: W * 0.72, y: H * 0.68 };
     const P3 = { x: HEADX + flower.size * 0.16, y: HEADY + flower.size * 0.42 };
     stemPts = [];
@@ -879,8 +1132,8 @@ void main() {
     fxCanvas.style.width = W + "px";
     fxCanvas.style.height = H + "px";
     // the ray-traced background reads perfectly at reduced resolution
-    skyCanvas.width = Math.ceil(W * DPR * 0.65);
-    skyCanvas.height = Math.ceil(H * DPR * 0.65);
+    skyCanvas.width = Math.ceil(W * DPR * 0.72);
+    skyCanvas.height = Math.ceil(H * DPR * 0.72);
     skyCanvas.style.width = W + "px";
     skyCanvas.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -894,6 +1147,8 @@ void main() {
 
     renderName();
     buildStem();
+    seedBank();
+    grainPattern = ctx.createPattern(grainTex, "repeat");
 
     fireflies.length = 0;
     for (let i = 0; i < 9; i++) {
@@ -928,11 +1183,16 @@ void main() {
 
     updateShootingStar(dt);
     drawName(t);
+    drawMist(dt, t);
     drawRipples(dt);
     drawFireflies(t);
     updateWaterPetals(dt, t);
+    drawBank(t);
+    drawGrass(t, false);
     drawStem(t);
     drawHead(t);
+    drawGrass(t, true);
+    drawCattails(t);
     updateAirPetals(dt, t);
     updatePollen(dt, t);
 
@@ -957,6 +1217,19 @@ void main() {
         ctx.fillStyle = `rgba(1,0,4,${fade})`;
         ctx.fillRect(0, 0, W, H);
       }
+    }
+
+    // a breath of film grain over the whole frame
+    if (grainPattern) {
+      ctx.save();
+      ctx.globalAlpha = 0.035;
+      ctx.globalCompositeOperation = "overlay";
+      const gx = reducedMotion ? 0 : (Math.random() * 96) | 0;
+      const gy = reducedMotion ? 0 : (Math.random() * 96) | 0;
+      ctx.translate(-gx, -gy);
+      ctx.fillStyle = grainPattern;
+      ctx.fillRect(0, 0, W + 96, H + 96);
+      ctx.restore();
     }
 
     if (!iconsShown && movieT > 31) {
