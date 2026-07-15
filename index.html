@@ -53,7 +53,7 @@
 
   // ----- personalization: ?name=Sofia -----
   const params = new URLSearchParams(location.search);
-  const NAME = (params.get("name") || "Mary").slice(0, 24);
+  const NAME = (params.get("name") || "Text me if you see this Mary").slice(0, 48);
   document.title = "A Bouquet for " + NAME;
 
   const canvas = document.getElementById("garden");
@@ -90,10 +90,16 @@
   // both behind and in front of it
   // ---------------------------------------------------------------
   function renderName() {
-    const fontSize = clamp(W * 0.125, 52, 165);
-    const font = `italic bold ${fontSize}px Georgia, "Palatino Linotype", serif`;
+    let fontSize = clamp(W * 0.125, 52, 165);
+    let font = `italic bold ${fontSize}px Georgia, "Palatino Linotype", serif`;
     ctx.font = font;
-    const textW = ctx.measureText(NAME).width;
+    let textW = ctx.measureText(NAME).width;
+    if (textW > W * 0.86) { // longer messages shrink to fit the screen
+      fontSize = Math.max(26, fontSize * (W * 0.86) / textW);
+      font = `italic bold ${fontSize}px Georgia, "Palatino Linotype", serif`;
+      ctx.font = font;
+      textW = ctx.measureText(NAME).width;
+    }
     clearRadius = textW * 0.5 + fontSize * 0.15;
     nameHalfH = fontSize * 0.62;
 
@@ -632,7 +638,7 @@
 
   function wreathEllipse() {
     const rx = Math.min(clearRadius * 1.14, W * 0.5 - 60);
-    const ry = clearRadius * 0.55 + 40;
+    const ry = Math.min(clearRadius * 0.55, nameHalfH * 1.7) + 40;
     return { rx, ry };
   }
 
