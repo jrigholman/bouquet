@@ -53,7 +53,7 @@
 
   // ----- personalization: ?name=Sofia -----
   const params = new URLSearchParams(location.search);
-  const NAME = (params.get("name") || "Text me if you see this Mary").slice(0, 48);
+  const NAME = (params.get("name") || "Mary").slice(0, 48);
   document.title = "A Bouquet for " + NAME;
 
   const canvas = document.getElementById("garden");
