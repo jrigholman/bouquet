@@ -13,7 +13,10 @@
 <!-- Private view counting (GoatCounter). Put your site code below to switch
      it on: "abc" -> abc.goatcounter.com. Empty = nothing loads, nothing sent.
      Open any page once with #noc to stop counting your own visits on that
-     device (#count re-enables). Cookieless; records page + link only. -->
+     device (#count re-enables). Cookieless; records page + link only.
+     Each hit is tagged visit=first or visit=return (visit=unknown when the
+     browser blocks storage), so new arrivals and repeat opens show as
+     separate rows. -->
 <script>
 (function () {
   var GC_CODE = "wcomops";
@@ -25,8 +28,18 @@
     skip = localStorage.getItem("gc-skip") === "1";
   } catch (e) {}
   if (skip) return;
+
+  // has this browser opened this page before?
+  var visit = "first";
+  try {
+    var seen = "gc-seen:" + location.pathname;
+    if (localStorage.getItem(seen)) visit = "return";
+    else localStorage.setItem(seen, "1");
+  } catch (e) { visit = "unknown"; }  // storage blocked: don't fake a new visitor
+
   // keep the query string so each shared link counts separately
-  window.goatcounter = { path: location.pathname + location.search };
+  var q = location.search ? location.search + "&" : "?";
+  window.goatcounter = { path: location.pathname + q + "visit=" + visit };
   var s = document.createElement("script");
   s.async = true;
   s.src = "https://gc.zgo.at/count.js";
