@@ -14,4 +14,6 @@ A third scene, `moonlight.html`, is a quiet, romantic alternative built from scr
 
 There is also a cinematic version: `movie.html` plays a ~30-second film — the first vine sprouts in close-up, the garden climbs and swirls, one marigold blooms in slow motion, every flower opens in a wave, and the name is revealed — then holds on the living garden with a replay button. The ▶ icon on the main page links to it, and `?name=` works there too.
 
+A fourth scene, `amy.html`, is a ray-traced dawn meadow: eight tulips — rose, coral, and blush — grow from the grass and bloom in an arc around the name as the sun rises, every petal marched as real 3D geometry in a WebGL shader and lit with backlit translucency. `?name=` works there too.
+
 No dependencies or build step — just open `index.html` in a browser.

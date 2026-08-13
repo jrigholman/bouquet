@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flowers from Jon</title>
+<meta name="theme-color" content="#2a1420">
+<meta property="og:title" content="Flowers from Jon">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://flowers.wcomops.com/amy.html">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Flowers from Jon">
+<!-- Private view counting (GoatCounter). Same behavior as the other pages:
+     #noc opts a device out, #count back in; hits are tagged visit=first /
+     visit=return / visit=unknown. -->
+<script>
+(function () {
+  var GC_CODE = "wcomops";
+  if (!GC_CODE) return;
+  var skip = false;
+  try {
+    if (location.hash === "#noc") localStorage.setItem("gc-skip", "1");
+    else if (location.hash === "#count") localStorage.removeItem("gc-skip");
+    skip = localStorage.getItem("gc-skip") === "1";
+  } catch (e) {}
+  if (skip) return;
+  var visit = "first";
+  try {
+    var seen = "gc-seen:" + location.pathname;
+    if (localStorage.getItem(seen)) visit = "return";
+    else localStorage.setItem(seen, "1");
+  } catch (e) { visit = "unknown"; }
+  var q = location.search ? location.search + "&" : "?";
+  window.goatcounter = { path: location.pathname + q + "visit=" + visit };
+  var s = document.createElement("script");
+  s.async = true;
+  s.src = "https://gc.zgo.at/count.js";
+  s.setAttribute("data-goatcounter", "https://" + GC_CODE + ".goatcounter.com/count");
+  document.head.appendChild(s);
+})();
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1c0f1c; }
+  canvas { position: fixed; inset: 0; display: block; }
+  #sky { z-index: 0; }
+  #fx { z-index: 1; }
+
+  .film-btn {
+    position: fixed;
+    bottom: 1.1rem;
+    right: 1.3rem;
+    font-size: 1.7rem;
+    line-height: 1;
+    color: rgba(255, 214, 214, 0.7);
+    text-shadow: 0 1px 4px rgba(40,0,20,0.7);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1.4s ease, color 0.3s ease;
+    z-index: 3;
+    cursor: pointer;
+    user-select: none;
+  }
+  .film-btn.show { opacity: 1; pointer-events: auto; }
+  .film-btn:hover { color: rgba(255, 238, 235, 1); }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<canvas id="fx"></canvas>
+<div id="film-replay" class="film-btn" role="button" aria-label="replay">&#8635;</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ----- personalization: ?name=Sofia -----
+  const params = new URLSearchParams(location.search);
+  const NAME = (params.get("name") || "Amy").slice(0, 24);
+  document.title = "A Bouquet for " + NAME;
+
+  const fxCanvas = document.getElementById("fx");
+  const ctx = fxCanvas.getContext("2d");
+  const skyCanvas = document.getElementById("sky");
+  const reducedMq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let reducedMotion = reducedMq.matches;
+  const TAU = Math.PI * 2;
+
+  let W = 0, H = 0, DPR = 1;
+  let NX = 0, NY = 0;
+  let movieT = 0;
+  let nameSprite = null;
+  let iconsShown = false;
+  let grainPattern = null;
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const smooth = (v) => v * v * (3 - 2 * v);
+
+  // fine monochrome noise for film grain
+  const grainTex = (() => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 96;
+    const g = c.getContext("2d");
+    const img = g.createImageData(96, 96);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 128 + ((Math.random() * 90 - 45) | 0);
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  })();
+
+  // ---------------------------------------------------------------
+  // Film timeline (~26s)
+  //   0-2.5 fade in at first light · 1-9 the sun climbs and the sky
+  //   warms · 2.5-9 eight stems rise from the meadow · 8-17 the tulips
+  //   open one after another around the empty air · 16-20 the name
+  //   glows into that opening · then a living hold
+  // ---------------------------------------------------------------
+  const dawnAmt = () => reducedMotion ? 1 : smooth(clamp((movieT - 1.0) / 8.0, 0, 1));
+  const growAmt = () => reducedMotion ? 1 : clamp((movieT - 2.5) / 6.5, 0, 1);
+  const bloomAmt = () => reducedMotion ? 1 : clamp((movieT - 8.0) / 9.0, 0, 1);
+  const nameAlpha = () => reducedMotion ? 1 : smooth(clamp((movieT - 16.0) / 4.0, 0, 1));
+
+  // ---------------------------------------------------------------
+  // The tulip bed lives in world space; the camera never moves.
+  // Eight tulips stand in a loose arc, and the name floats in the
+  // opening their heads frame.
+  // ---------------------------------------------------------------
+  const CAMY = 1.5;                 // camera height
+  const NAMEW = [0, 1.96, -5.2];    // the name's world position
+
+  //           baseX  baseZ height headR  hue  bend  phase
+  const TULIPS = [
+    { x: -2.30, z: -5.6, h: 2.15, r: 0.262, hue: 0.04, bend:  0.34 },
+    { x: -1.72, z: -4.9, h: 1.72, r: 0.234, hue: 0.46, bend:  0.22 },
+    { x: -1.18, z: -4.3, h: 1.28, r: 0.212, hue: 0.80, bend:  0.12 },
+    { x: -0.42, z: -3.9, h: 0.92, r: 0.196, hue: 0.28, bend:  0.05 },
+    { x:  0.46, z: -3.9, h: 0.98, r: 0.200, hue: 0.62, bend: -0.06 },
+    { x:  1.22, z: -4.3, h: 1.34, r: 0.218, hue: 0.10, bend: -0.14 },
+    { x:  1.78, z: -4.9, h: 1.78, r: 0.240, hue: 0.55, bend: -0.24 },
+    { x:  2.36, z: -5.6, h: 2.22, r: 0.268, hue: 0.92, bend: -0.36 },
+  ];
+  TULIPS.forEach((t, i) => { t.phase = i * 1.73; });
+
+  // stagger: each tulip's own share of a global 0..1 progress
+  function stagger(global, i, n, span) {
+    const start = (i * 0.83 % 1) * (1 - span);
+    return smooth(clamp((global - start) / span, 0, 1));
+  }
+
+  // ---------------------------------------------------------------
+  // Ray-traced dawn (WebGL). Every pixel casts a ray: tulips and their
+  // stems are marched as signed-distance geometry, lit by the rising
+  // sun with petal translucency; the meadow and sky share the light.
+  // ---------------------------------------------------------------
+  let gl = null, glProg = null, glUniforms = {};
+
+  const VSRC = `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+  const FSRC = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2 uRes;
+uniform float uT;
+uniform float uDawn;      // 0 first light .. 1 morning gold
+uniform float uName;      // the name's glow
+uniform vec2 uNameNdc;
+uniform vec4 uTulA[8];    // baseX, baseZ, height, headR
+uniform vec4 uTulB[8];    // grow, bloom, bend, hue
+
+#define CAMY 1.5
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+  return v;
+}
+
+vec3 rayDir(vec2 ndc) {
+  float aspect = uRes.x / uRes.y;
+  return normalize(vec3(ndc.x * aspect * 0.9, (ndc.y + 0.16) * 0.9, -2.0));
+}
+
+vec3 sunDir() {
+  float el = mix(0.045, 0.16, uDawn);
+  return normalize(vec3(-0.42, el, -1.0));
+}
+
+// ---- one tulip head: an egg of six creased petals that parts open ----
+float tulipHead(vec3 q, float R, float m) {
+  float r = length(q.xz);
+  float a = atan(q.z, q.x);
+  float yn = q.y / R;
+  float pole = smoothstep(0.03, 0.30, r / R); // keep the tip artifact-free
+  // a tall goblet, slim as a bud, filling out as it opens
+  float wide = mix(0.64, 0.97, m);
+  float d = length(vec2(r / wide, (q.y - R * 0.02) * 0.60)) - R;
+  // six petals in two rows of three; creases carve in as it opens
+  float rowA = 0.5 + 0.5 * cos(a * 3.0);
+  float rowB = 0.5 + 0.5 * cos(a * 3.0 + 3.14159);
+  float up = smoothstep(-0.6, 1.15, yn);
+  d += R * (0.085 * rowA + 0.060 * rowB) * up * pole * mix(0.30, 1.0, m);
+  // the mouth: tips highest at each petal's centre, parting as it blooms
+  float petalMid = 0.5 - 0.5 * cos(a * 3.0);
+  float lip = mix(0.98, 1.30, m) + 0.26 * petalMid * m;
+  d = max(d, (q.y - R * lip) * 0.66);
+  // petal bellies flare outward while the creases stay tucked
+  d -= R * 0.15 * m * smoothstep(0.25, 1.05, yn) * (0.35 + 0.65 * petalMid) * pole;
+  return d * 0.70;
+}
+
+// globals filled by map(): which tulip, and head (1) or stem (0)
+float gIdx = 0.0;
+float gPart = 0.0;
+
+float map(vec3 p) {
+  float dmin = 1e9;
+  for (int i = 0; i < 8; i++) {
+    vec4 A = uTulA[i];
+    vec4 B = uTulB[i];
+    if (B.x < 0.02) continue;
+    vec3 base = vec3(A.x, 0.0, A.y);
+    float g = B.x;
+    vec3 top = base + vec3(B.z * g * g, A.z * g, 0.0);
+    // quick reject: a sphere around the whole plant
+    float reach = A.z * g + A.w * 1.6;
+    vec3 mid0 = (base + top) * 0.5;
+    if (length(p - mid0) - reach * 0.62 - A.w * 1.6 > dmin) continue;
+    // stem: three capsule segments along a gentle quadratic bend
+    vec3 ctrl = base + vec3(B.z * g * 0.35, A.z * g * 0.55, 0.0);
+    vec3 prev = base;
+    float ds = 1e9;
+    for (int s = 1; s <= 3; s++) {
+      float ss = float(s) / 3.0;
+      vec3 q = mix(mix(base, ctrl, ss), mix(ctrl, top, ss), ss);
+      vec3 pa = p - prev, ba = q - prev;
+      float hh = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+      ds = min(ds, length(pa - ba * hh));
+      prev = q;
+    }
+    ds -= A.w * 0.14;
+    if (ds < dmin) { dmin = ds; gIdx = float(i); gPart = 0.0; }
+    // the head rides the stem tip, swelling with the bloom
+    float m = B.y;
+    float R = A.w * (0.42 + 0.58 * max(m, 0.22));
+    float dh = tulipHead(p - (top + vec3(0.0, R * 0.55, 0.0)), R, m);
+    if (dh < dmin) { dmin = dh; gIdx = float(i); gPart = 1.0; }
+  }
+  return dmin;
+}
+
+vec3 mapNormal(vec3 p) {
+  float e = 0.012;
+  float i0 = gIdx, p0 = gPart;
+  vec3 n = normalize(vec3(
+    map(p + vec3(e, 0, 0)) - map(p - vec3(e, 0, 0)),
+    map(p + vec3(0, e, 0)) - map(p - vec3(0, e, 0)),
+    map(p + vec3(0, 0, e)) - map(p - vec3(0, 0, e))));
+  gIdx = i0; gPart = p0;
+  return n;
+}
+
+vec2 bedHit(vec3 ro, vec3 rd) {
+  vec3 c = vec3(0.0, 1.15, -4.8);
+  float R = 4.1;
+  vec3 oc = ro - c;
+  float b = dot(oc, rd);
+  float h = b * b - (dot(oc, oc) - R * R);
+  if (h < 0.0) return vec2(-1.0);
+  h = sqrt(h);
+  return vec2(-b - h, -b + h);
+}
+
+// petal colours: deep rose .. coral .. blush, one per tulip
+vec3 tulipColor(float hue) {
+  vec3 rose  = vec3(0.78, 0.06, 0.15);
+  vec3 coral = vec3(0.98, 0.30, 0.22);
+  vec3 blush = vec3(1.00, 0.62, 0.60);
+  return hue < 0.5 ? mix(rose, coral, hue * 2.0) : mix(coral, blush, hue * 2.0 - 1.0);
+}
+
+vec3 skyColor(vec3 rd, vec3 sun) {
+  float h1 = pow(1.0 - max(rd.y, 0.0), 2.0);
+  float h2 = pow(1.0 - max(rd.y, 0.0), 6.0);
+  vec3 top = mix(vec3(0.13, 0.08, 0.24), vec3(0.34, 0.18, 0.40), uDawn);
+  vec3 mid = mix(vec3(0.46, 0.16, 0.32), vec3(0.98, 0.38, 0.40), uDawn);
+  vec3 low = mix(vec3(0.74, 0.26, 0.24), vec3(1.30, 0.60, 0.28), uDawn);
+  vec3 col = mix(top, mid, h1);
+  col = mix(col, low, h2);
+  // the sun and its bloom
+  float s = max(dot(rd, sun), 0.0);
+  vec3 sunCol = mix(vec3(1.0, 0.42, 0.22), vec3(1.0, 0.78, 0.46), uDawn);
+  col += sunCol * (pow(s, 1400.0) * 3.4 + pow(s, 40.0) * 0.85 + pow(s, 7.0) * 0.22) * (0.35 + 0.80 * uDawn);
+  // slow rosy clouds, lit from the sun's side
+  if (rd.y > 0.015) {
+    vec2 cuv = rd.xz / (rd.y + 0.12);
+    float cl = fbm(cuv * 1.15 + vec2(uT * 0.008, 0.0));
+    cl = smoothstep(0.46, 0.78, cl) * smoothstep(0.0, 0.16, rd.y) * 0.55;
+    float lit = 0.5 + 0.5 * dot(normalize(rd.xz), normalize(sun.xz));
+    vec3 cc = mix(mix(vec3(0.42, 0.24, 0.36), vec3(0.60, 0.30, 0.38), lit),
+                  mix(vec3(0.86, 0.52, 0.55), vec3(1.05, 0.74, 0.60), lit), uDawn);
+    col = mix(col, cc, cl);
+  }
+  // the name's golden halo joins the sky
+  vec3 nd = rayDir(uNameNdc);
+  float ng = max(dot(rd, nd), 0.0);
+  col += vec3(1.0, 0.62, 0.34) * pow(ng, 60.0) * 0.55 * uName;
+  return col;
+}
+
+void main() {
+  vec2 ndc = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;
+  vec3 ro = vec3(0.0, CAMY, 0.0);
+  vec3 rd = rayDir(ndc);
+  vec3 sun = sunDir();
+  vec3 col;
+
+  // march the tulip bed first
+  bool hitPlant = false;
+  vec3 hp = vec3(0.0);
+  vec2 bs = bedHit(ro, rd);
+  if (bs.y > 0.0) {
+    float tf = max(bs.x, 0.0);
+    for (int i = 0; i < 72; i++) {
+      vec3 p = ro + rd * tf;
+      float d = map(p);
+      if (d < 0.004) { hitPlant = true; hp = p; break; }
+      tf += max(d * 0.85, 0.003);
+      if (tf > bs.y) break;
+    }
+  }
+
+  if (hitPlant) {
+    int idx = int(gIdx + 0.5);
+    float part = gPart;
+    vec3 N = mapNormal(hp);
+    vec4 A = vec4(0.0); vec4 B = vec4(0.0);
+    for (int i = 0; i < 8; i++) { if (i == idx) { A = uTulA[i]; B = uTulB[i]; } }
+    vec3 sunCol = mix(vec3(1.0, 0.45, 0.25), vec3(1.05, 0.85, 0.58), uDawn) * (0.80 + 0.80 * uDawn);
+    vec3 skyAmb = mix(vec3(0.30, 0.18, 0.28), vec3(0.52, 0.36, 0.40), uDawn);
+    float diff = max(dot(N, sun), 0.0);
+    if (part > 0.5) {
+      // petals: silk diffuse + strong backlit translucency
+      vec3 base = vec3(A.x, 0.0, A.y);
+      float g = B.x;
+      vec3 top = base + vec3(B.z * g * g, A.z * g, 0.0);
+      float R = A.w * (0.42 + 0.58 * max(B.y, 0.22));
+      vec3 q = hp - (top + vec3(0.0, R * 0.55, 0.0));
+      float yn = clamp(q.y / max(R, 1e-4), -1.2, 1.4);
+      float aa = atan(q.z, q.x);
+      float crease = 0.5 + 0.5 * cos(aa * 3.0);
+      vec3 pc = tulipColor(B.w);
+      // green climbs the base of the cup; colour saturates at the rim
+      vec3 alb = mix(vec3(0.10, 0.24, 0.10), pc, smoothstep(-1.0, -0.15, yn));
+      alb = mix(alb, pc * 1.15, smoothstep(0.45, 1.15, yn) * 0.55);
+      alb *= 1.0 - 0.32 * crease * crease;
+      // a bud stays green-wrapped until it opens
+      alb = mix(vec3(0.12, 0.26, 0.11), alb, smoothstep(0.05, 0.45, B.y));
+      // dawn shines through the petals: they glow where lit from behind
+      float thin = smoothstep(-0.15, 0.85, yn) * smoothstep(0.05, 0.45, B.y);
+      float glow = max(dot(-N, sun), 0.0);
+      float rim = pow(1.0 - max(dot(N, -rd), 0.0), 2.6);
+      float spec = pow(max(dot(reflect(rd, N), sun), 0.0), 20.0) * 0.18;
+      col = alb * (skyAmb * (0.80 + 0.30 * N.y) + sunCol * diff * 1.25 + sunCol * 0.16 * (1.0 - N.y))
+          + pc * sunCol * glow * thin * 1.15
+          + sunCol * (rim * 0.16 + spec);
+      // the name's gold falls on petals that face it
+      vec3 npos = ro + rayDir(uNameNdc) * 5.4;
+      col += vec3(1.0, 0.66, 0.34) * max(dot(N, normalize(npos - hp)), 0.0) * 0.28 * uName;
+    } else {
+      // stems: cool green cylinders with a warm rim from the sun
+      float hF = clamp(hp.y / 2.2, 0.0, 1.0);
+      vec3 alb = mix(vec3(0.08, 0.18, 0.08), vec3(0.15, 0.32, 0.13), hF);
+      float rim = pow(1.0 - max(dot(N, -rd), 0.0), 2.5);
+      col = alb * (skyAmb * 0.95 + sunCol * diff * 1.2) + sunCol * rim * 0.12;
+    }
+  } else if (rd.y < -0.012) {
+    // the meadow: soft dark ground rolling into sunlit haze
+    float tg = -(ro.y) / rd.y;
+    vec3 gp = ro + rd * tg;
+    float dist = length(gp.xz);
+    float meadow = fbm(gp.xz * 0.9);
+    vec3 near = mix(vec3(0.09, 0.12, 0.07), vec3(0.15, 0.18, 0.09), meadow);
+    near += mix(vec3(1.0, 0.45, 0.25), vec3(1.05, 0.85, 0.58), uDawn) * meadow * 0.05 * uDawn;
+    // the ground dissolves into the sunlit haze of the actual sky
+    vec3 fogSky = skyColor(normalize(vec3(rd.x, 0.018, rd.z)), sun);
+    col = mix(near, fogSky, smoothstep(3.5, 19.0, dist));
+    // dew catching first light
+    float dew = pow(noise(gp.xz * 14.0 + 7.0), 8.0) * smoothstep(6.0, 2.0, dist);
+    col += vec3(1.0, 0.8, 0.6) * dew * 0.5 * uDawn;
+  } else {
+    col = skyColor(rd, sun);
+  }
+
+  // low sun haze over everything near the horizon
+  float hz = pow(1.0 - abs(rd.y + 0.02), 8.0) * max(dot(normalize(rd.xz), normalize(sun.xz)), 0.0);
+  col += mix(vec3(1.0, 0.40, 0.22), vec3(1.0, 0.66, 0.40), uDawn) * hz * 0.08 * (0.3 + 0.7 * uDawn);
+
+  // filmic finish
+  col *= 0.86 + 0.34 * uDawn;
+  col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+  col = pow(col, vec3(0.96));
+  col += (hash(gl_FragCoord.xy + fract(uT) * 61.7) - 0.5) / 150.0;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+  function initGL() {
+    const opts = { antialias: false, depth: false, alpha: false };
+    gl = skyCanvas.getContext("webgl", opts) || skyCanvas.getContext("experimental-webgl", opts);
+    if (!gl) return false;
+    function sh(type, src) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.warn("tulip shader:", gl.getShaderInfoLog(s));
+        gl = null;
+        return null;
+      }
+      return s;
+    }
+    const vs = sh(gl.VERTEX_SHADER, VSRC);
+    if (!vs) return false;
+    const fs = sh(gl.FRAGMENT_SHADER, FSRC);
+    if (!fs) return false;
+    glProg = gl.createProgram();
+    gl.attachShader(glProg, vs);
+    gl.attachShader(glProg, fs);
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
+      console.warn("tulip shader link:", gl.getProgramInfoLog(glProg));
+      gl = null;
+      return false;
+    }
+    gl.useProgram(glProg);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(glProg, "aPos");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    for (const u of ["uRes", "uT", "uDawn", "uName", "uNameNdc", "uTulA", "uTulB"]) {
+      glUniforms[u] = gl.getUniformLocation(glProg, u);
+    }
+    return true;
+  }
+
+  const ndcOf = (x, y) => [(x / W) * 2 - 1, 1 - (y / H) * 2];
+
+  // project a world point through the shader's camera onto the screen
+  function screenFromWorld(p) {
+    const d = [p[0], p[1] - CAMY, p[2]];
+    const s = -2.0 / d[2];
+    const ndcx = (d[0] * s) / ((W / H) * 0.9);
+    const ndcy = (d[1] * s) / 0.9 - 0.16;
+    return [(ndcx + 1) / 2 * W, (1 - ndcy) / 2 * H];
+  }
+
+  const tulA = new Float32Array(32);
+  const tulB = new Float32Array(32);
+
+  function drawShaderBackground(t) {
+    gl.viewport(0, 0, skyCanvas.width, skyCanvas.height);
+    gl.uniform2f(glUniforms.uRes, skyCanvas.width, skyCanvas.height);
+    gl.uniform1f(glUniforms.uT, reducedMotion ? 0 : t);
+    gl.uniform1f(glUniforms.uDawn, dawnAmt());
+    gl.uniform1f(glUniforms.uName, nameAlpha());
+    const nn = ndcOf(NX, NY);
+    gl.uniform2f(glUniforms.uNameNdc, nn[0], nn[1]);
+    const grow = growAmt(), bloom = bloomAmt();
+    for (let i = 0; i < 8; i++) {
+      const tp = TULIPS[i];
+      const sway = reducedMotion ? 0 : Math.sin(t * 0.55 + tp.phase) * 0.035;
+      tulA[i * 4] = tp.x;
+      tulA[i * 4 + 1] = tp.z;
+      tulA[i * 4 + 2] = tp.h;
+      tulA[i * 4 + 3] = tp.r;
+      tulB[i * 4] = stagger(grow, i, 8, 0.45);
+      tulB[i * 4 + 1] = stagger(bloom, i, 8, 0.4);
+      tulB[i * 4 + 2] = tp.bend + sway;
+      tulB[i * 4 + 3] = tp.hue;
+    }
+    gl.uniform4fv(glUniforms.uTulA, tulA);
+    gl.uniform4fv(glUniforms.uTulB, tulB);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---------------------------------------------------------------
+  // Painted fallback for devices without WebGL — the same dawn,
+  // in gradients
+  // ---------------------------------------------------------------
+  function fallbackTulipHeadPath(g, R, m) {
+    const open = 0.35 + 0.65 * m;
+    g.beginPath();
+    g.moveTo(-R * 0.9, -R * 0.1);
+    g.bezierCurveTo(-R * 1.05, -R * (0.7 + open * 0.5), -R * 0.5, -R * (1.1 + open * 0.35), -R * (0.34 + open * 0.14), -R * (1.05 + open * 0.3));
+    g.bezierCurveTo(-R * 0.15, -R * 0.75, R * 0.15, -R * 0.75, R * (0.34 + open * 0.14), -R * (1.05 + open * 0.3));
+    g.bezierCurveTo(R * 0.5, -R * (1.1 + open * 0.35), R * 1.05, -R * (0.7 + open * 0.5), R * 0.9, -R * 0.1);
+    g.bezierCurveTo(R * 0.8, R * 0.75, -R * 0.8, R * 0.75, -R * 0.9, -R * 0.1);
+    g.closePath();
+  }
+
+  function fbTulipColor(hue) {
+    if (hue < 0.5) {
+      const k = hue * 2;
+      return [199 + k * 51, 15 + k * 62, 38 + k * 18];
+    }
+    const k = hue * 2 - 1;
+    return [250 + k * 5, 77 + k * 81, 56 + k * 97];
+  }
+
+  function drawFallbackBackground(t) {
+    const dawn = dawnAmt();
+    let g = ctx.createLinearGradient(0, 0, 0, H * 0.78);
+    g.addColorStop(0, dawn > 0.5 ? "#57384f" : "#2a1a34");
+    g.addColorStop(0.62, `rgb(${Math.round(120 + dawn * 90)},${Math.round(52 + dawn * 45)},${Math.round(70 + dawn * 15)})`);
+    g.addColorStop(1, `rgb(${Math.round(150 + dawn * 105)},${Math.round(70 + dawn * 62)},${Math.round(78 + dawn * 12)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H * 0.78);
+    // the sun
+    const sx = W * 0.34, sy = H * (0.72 - dawn * 0.10);
+    g = ctx.createRadialGradient(sx, sy, 0, sx, sy, W * 0.3);
+    g.addColorStop(0, `rgba(255,${Math.round(140 + dawn * 60)},70,${0.5 + dawn * 0.3})`);
+    g.addColorStop(0.12, `rgba(255,${Math.round(120 + dawn * 60)},60,${0.25 + dawn * 0.2})`);
+    g.addColorStop(1, "rgba(255,120,60,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(sx - W * 0.3, sy - W * 0.3, W * 0.6, W * 0.6);
+    // the meadow
+    g = ctx.createLinearGradient(0, H * 0.74, 0, H);
+    g.addColorStop(0, `rgb(${Math.round(90 + dawn * 60)},${Math.round(48 + dawn * 28)},${Math.round(58 + dawn * 8)})`);
+    g.addColorStop(0.3, "#20251a");
+    g.addColorStop(1, "#12140e");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, H * 0.74, W, H * 0.26);
+
+    // painted tulips on the same arc
+    const grow = growAmt(), bloom = bloomAmt();
+    for (let i = 0; i < 8; i++) {
+      const tp = TULIPS[i];
+      const bx = screenFromWorld([tp.x, 0, tp.z]);
+      const gI = stagger(grow, i, 8, 0.45);
+      if (gI <= 0.02) continue;
+      const mI = stagger(bloom, i, 8, 0.4);
+      const top = screenFromWorld([tp.x + tp.bend * gI * gI, tp.h * gI, tp.z]);
+      const R = (tp.r * (0.42 + 0.58 * Math.max(mI, 0.22))) * H / (-tp.z) * 2.2;
+      const sway = reducedMotion ? 0 : Math.sin(t * 0.55 + tp.phase) * R * 0.10;
+      ctx.strokeStyle = "#274a26";
+      ctx.lineWidth = Math.max(2, R * 0.16);
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(bx[0], bx[1]);
+      ctx.quadraticCurveTo(bx[0] + (top[0] - bx[0]) * 0.3, bx[1] + (top[1] - bx[1]) * 0.6, top[0] + sway, top[1]);
+      ctx.stroke();
+      const c = fbTulipColor(tp.hue);
+      const green = 1 - smooth(clamp((mI - 0.05) / 0.4, 0, 1));
+      ctx.save();
+      ctx.translate(top[0] + sway, top[1] - R * 0.15);
+      fallbackTulipHeadPath(ctx, R, mI);
+      const hg = ctx.createLinearGradient(0, -R * 1.3, 0, R * 0.7);
+      hg.addColorStop(0, `rgb(${Math.round(c[0] * (1 - green) + 40 * green)},${Math.round(c[1] * (1 - green) + 90 * green)},${Math.round(c[2] * (1 - green) + 45 * green)})`);
+      hg.addColorStop(1, `rgb(${Math.round(c[0] * 0.55 * (1 - green) + 25 * green)},${Math.round(c[1] * 0.5 * (1 - green) + 60 * green)},${Math.round(c[2] * 0.6 * (1 - green) + 30 * green)})`);
+      ctx.fillStyle = hg;
+      ctx.fill();
+      // centre petal seam
+      ctx.strokeStyle = "rgba(60,10,20,0.25)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, -R * (0.95 + mI * 0.3));
+      ctx.quadraticCurveTo(R * 0.05, -R * 0.3, 0, R * 0.6);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // The name, pre-rendered with a rose-gold glow
+  // ---------------------------------------------------------------
+  function renderName() {
+    const fontSize = clamp(W * 0.115, 46, 148);
+    const font = `italic bold ${fontSize}px Georgia, "Palatino Linotype", serif`;
+    ctx.font = font;
+    const textW = ctx.measureText(NAME).width;
+    const pad = fontSize * 0.6;
+    const c = document.createElement("canvas");
+    const lw = textW + pad * 2;
+    const lh = fontSize * 1.35 + pad * 2;
+    c.width = Math.ceil(lw * DPR);
+    c.height = Math.ceil(lh * DPR);
+    const g = c.getContext("2d");
+    g.scale(DPR, DPR);
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    const nx = lw / 2, ny = pad + fontSize * 0.62;
+    g.font = font;
+    g.shadowColor = "rgba(255,140,110,0.85)";
+    g.shadowBlur = fontSize * 0.28;
+    g.fillStyle = "rgba(255,196,170,0.9)";
+    g.fillText(NAME, nx, ny);
+    g.shadowBlur = fontSize * 0.10;
+    g.fillText(NAME, nx, ny);
+    g.shadowBlur = 0;
+    const grad = g.createLinearGradient(0, ny - fontSize * 0.55, 0, ny + fontSize * 0.55);
+    grad.addColorStop(0, "#fff6ec");
+    grad.addColorStop(0.35, "#ffdcc0");
+    grad.addColorStop(0.62, "#ffab88");
+    grad.addColorStop(1, "#e06a52");
+    g.fillStyle = grad;
+    g.fillText(NAME, nx, ny);
+    nameSprite = { canvas: c, w: lw, h: lh, ox: nx, oy: ny };
+  }
+
+  function drawName(t) {
+    const a = nameAlpha();
+    if (!nameSprite || a <= 0) return;
+    const s = nameSprite;
+    const pulse = reducedMotion ? 0 : (Math.sin(t * 1.1) + 1) / 2;
+    ctx.save();
+    ctx.translate(NX, NY);
+    ctx.scale(1 + pulse * 0.01, 1 + pulse * 0.01);
+    ctx.globalAlpha = a;
+    ctx.drawImage(s.canvas, -s.ox, -s.oy, s.w, s.h);
+    if (pulse > 0) {
+      ctx.globalAlpha = a * pulse * 0.25;
+      ctx.globalCompositeOperation = "lighter";
+      ctx.drawImage(s.canvas, -s.ox, -s.oy, s.w, s.h);
+    }
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------
+  // 2D life: drifting petals, sun-warmed bokeh, ground mist,
+  // foreground grass
+  // ---------------------------------------------------------------
+  const petals = [];
+  const bokeh = [];
+  const blades = [];
+  let nextPetal = 19;
+
+  function seedFx() {
+    bokeh.length = 0;
+    for (let i = 0; i < 14; i++) {
+      bokeh.push({
+        x: rand(0, W), y: rand(H * 0.15, H * 0.9),
+        r: rand(4, 16), sp: rand(2.5, 8),
+        ph: rand(0, TAU), a: rand(0.04, 0.12),
+        warm: Math.random() < 0.6,
+      });
+    }
+    blades.length = 0;
+    const n = Math.round(W / 7);
+    for (let i = 0; i < n; i++) {
+      blades.push({
+        x: rand(-10, W + 10),
+        h: rand(H * 0.035, H * 0.13) * (1 - 0.5 * Math.abs(i / n - 0.5)),
+        lean: rand(-0.35, 0.35), ph: rand(0, TAU),
+        w: rand(1.2, 2.6),
+        lit: Math.random() < 0.3,
+      });
+    }
+  }
+
+  function spawnPetal() {
+    const tp = TULIPS[(Math.random() * 8) | 0];
+    const top = screenFromWorld([tp.x + tp.bend, tp.h, tp.z]);
+    const c = fbTulipColor(tp.hue);
+    petals.push({
+      x: top[0] + rand(-10, 10), y: top[1] + rand(-6, 6),
+      vx: rand(6, 18), vy: rand(4, 14),
+      rot: rand(0, TAU), rs: rand(-1.2, 1.2),
+      s: rand(5, 9), a: 0.9,
+      ph: rand(0, TAU),
+      col: `rgba(${c[0]},${Math.round(c[1] * 1.3 + 30)},${Math.round(c[2] * 1.2 + 25)},`,
+    });
+  }
+
+  function updatePetals(dt, t) {
+    if (!reducedMotion && movieT > nextPetal) {
+      nextPetal = movieT + rand(2.5, 7);
+      spawnPetal();
+    }
+    for (let i = petals.length - 1; i >= 0; i--) {
+      const p = petals[i];
+      p.x += (p.vx + Math.sin(t * 1.3 + p.ph) * 12) * dt;
+      p.y += p.vy * dt;
+      p.rot += p.rs * dt;
+      p.a -= dt * 0.06;
+      if (p.a <= 0 || p.y > H + 20 || p.x > W + 30) { petals.splice(i, 1); continue; }
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot + Math.sin(t * 2 + p.ph) * 0.4);
+      ctx.scale(1, 0.55 + 0.4 * Math.sin(t * 3.1 + p.ph));
+      ctx.fillStyle = p.col + p.a.toFixed(3) + ")";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, p.s, p.s * 0.62, 0, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawBokeh(t) {
+    const dawn = dawnAmt();
+    if (dawn <= 0.1) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const b of bokeh) {
+      const y = b.y - ((t * b.sp + b.ph * 30) % (H * 0.9));
+      const yy = y < -20 ? y + H * 0.9 + 40 : y;
+      const tw = 0.55 + 0.45 * Math.sin(t * 0.8 + b.ph);
+      const a = b.a * tw * dawn;
+      const g = ctx.createRadialGradient(b.x, yy, 0, b.x, yy, b.r);
+      const col = b.warm ? "255,200,150" : "255,170,170";
+      g.addColorStop(0, `rgba(${col},${a})`);
+      g.addColorStop(1, `rgba(${col},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(b.x, yy, b.r, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawMist(t) {
+    const dawn = dawnAmt();
+    const y0 = H * 0.76;
+    for (let i = 0; i < 3; i++) {
+      const drift = reducedMotion ? 0 : Math.sin(t * 0.07 + i * 2.1) * W * 0.06;
+      const g = ctx.createRadialGradient(W * (0.25 + i * 0.3) + drift, y0 + i * 14, 0, W * (0.25 + i * 0.3) + drift, y0 + i * 14, W * 0.3);
+      g.addColorStop(0, `rgba(255,190,160,${0.045 * dawn + 0.015})`);
+      g.addColorStop(1, "rgba(255,190,160,0)");
+      ctx.save();
+      ctx.scale(1, 0.22);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc((W * (0.25 + i * 0.3) + drift), (y0 + i * 14) / 0.22, W * 0.3, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawGrass(t) {
+    ctx.lineCap = "round";
+    for (const b of blades) {
+      const sway = reducedMotion ? 0 : Math.sin(t * 0.9 + b.ph) * 3;
+      ctx.strokeStyle = b.lit ? "rgba(52,66,30,0.9)" : "rgba(14,22,10,0.9)";
+      ctx.lineWidth = b.w;
+      ctx.beginPath();
+      ctx.moveTo(b.x, H + 2);
+      ctx.quadraticCurveTo(b.x + b.lean * b.h * 0.4, H - b.h * 0.6, b.x + b.lean * b.h + sway, H - b.h);
+      ctx.stroke();
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Layout & loop
+  // ---------------------------------------------------------------
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    fxCanvas.width = W * DPR;
+    fxCanvas.height = H * DPR;
+    fxCanvas.style.width = W + "px";
+    fxCanvas.style.height = H + "px";
+    skyCanvas.width = Math.ceil(W * DPR * 0.72);
+    skyCanvas.height = Math.ceil(H * DPR * 0.72);
+    skyCanvas.style.width = W + "px";
+    skyCanvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    const ns = screenFromWorld(NAMEW);
+    NX = ns[0];
+    NY = ns[1];
+
+    renderName();
+    seedFx();
+    grainPattern = ctx.createPattern(grainTex, "repeat");
+  }
+
+  let last = performance.now();
+  let filmStart = null;
+
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    const t = now / 1000;
+    if (filmStart === null) {
+      reducedMotion = reducedMq.matches; // re-read once rendering actually starts
+      filmStart = now - (reducedMotion ? 40000 : 0);
+    }
+    movieT = (now - filmStart) / 1000;
+
+    if (gl) {
+      drawShaderBackground(t);
+      ctx.clearRect(0, 0, W, H);
+    } else {
+      drawFallbackBackground(t);
+    }
+
+    drawName(t);
+    drawMist(t);
+    drawBokeh(t);
+    updatePetals(dt, t);
+    drawGrass(t);
+
+    // vignette
+    const v = ctx.createRadialGradient(W * 0.5, H * 0.45, Math.min(W, H) * 0.45, W * 0.5, H * 0.45, Math.hypot(W, H) * 0.62);
+    v.addColorStop(0, "rgba(0,0,0,0)");
+    v.addColorStop(1, "rgba(20,4,10,0.45)");
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, W, H);
+
+    // letterbox and fade-in for the film
+    if (!reducedMotion) {
+      const bar = H * 0.082 * smooth(clamp(movieT / 1.4, 0, 1)) *
+        (1 - smooth(clamp((movieT - 25.5) / 1.8, 0, 1)));
+      if (bar > 0.5) {
+        ctx.fillStyle = "#0a0308";
+        ctx.fillRect(0, 0, W, bar);
+        ctx.fillRect(0, H - bar, W, bar);
+      }
+      const fade = 1 - smooth(clamp(movieT / 2.6, 0, 1));
+      if (fade > 0) {
+        ctx.fillStyle = `rgba(8,2,6,${fade})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // film grain
+    if (grainPattern) {
+      ctx.save();
+      ctx.globalAlpha = 0.035;
+      ctx.globalCompositeOperation = "overlay";
+      const gx = reducedMotion ? 0 : (Math.random() * 96) | 0;
+      const gy = reducedMotion ? 0 : (Math.random() * 96) | 0;
+      ctx.translate(-gx, -gy);
+      ctx.fillStyle = grainPattern;
+      ctx.fillRect(0, 0, W + 96, H + 96);
+      ctx.restore();
+    }
+
+    if (!iconsShown && movieT > 26) {
+      iconsShown = true;
+      document.getElementById("film-replay").classList.add("show");
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // a touch anywhere frees a petal into the air
+  function touch(x, y) {
+    spawnPetal();
+    const p = petals[petals.length - 1];
+    if (p) { p.x = x; p.y = y; }
+  }
+  window.addEventListener("click", (e) => touch(e.clientX, e.clientY));
+  window.addEventListener("touchstart", (e) => {
+    const t0 = e.touches[0];
+    if (t0) touch(t0.clientX, t0.clientY);
+  }, { passive: true });
+  window.addEventListener("resize", resize);
+  document.getElementById("film-replay").addEventListener("click", () => location.reload());
+
+  // ---------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------
+  initGL();
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
